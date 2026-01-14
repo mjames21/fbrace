@@ -18,6 +18,9 @@ class Delegate extends Model
         'email',
         'is_high_value',
         'is_active',
+        'phone_primary',
+        'phone_secondary',
+        'guarantor_id',
     ];
 
     protected $casts = [
@@ -58,5 +61,9 @@ class Delegate extends Model
     public function statuses(): HasMany
     {
         return $this->hasMany(DelegateCandidateStatus::class);
+    }
+    public function guarantor(): BelongsTo
+    {
+        return $this->belongsTo(Guarantor::class);
     }
 }

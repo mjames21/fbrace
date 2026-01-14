@@ -12,6 +12,8 @@ use App\Livewire\Manage\Districts;
 use App\Livewire\Manage\Groups;
 use App\Livewire\Manage\Regions;
 use App\Livewire\Reports\StatusHistory;
+use App\Livewire\Manage\Guarantors;
+use App\Livewire\Manage\GuarantorShow;
 
 Route::get('/', function () {
     return view('welcome');
@@ -38,5 +40,14 @@ Route::get('/manage/delegates', Delegates::class)->name('manage.delegates');
 Route::get('/manage/candidates', Candidates::class)->name('manage.candidates');
 Route::get('/manage/alliances', Alliances::class)->name('manage.alliances');
 
+
+Route::get('/manage/guarantors', Guarantors::class)->name('manage.guarantors');
+Route::get('/manage/guarantors/{guarantorId}', GuarantorShow::class)->name('manage.guarantors.show');
+
 Route::get('/reports/status-history', StatusHistory::class)->name('reports.status-history');
+Route::get('/reports/status-history/export/csv', [StatusHistoryExportController::class, 'csv'])
+        ->name('reports.status-history.export.csv');
+
+    Route::get('/reports/status-history/export/pdf', [StatusHistoryExportController::class, 'pdf'])
+        ->name('reports.status-history.export.pdf');
 });

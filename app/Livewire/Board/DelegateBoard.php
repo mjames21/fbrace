@@ -8,6 +8,7 @@ use App\Models\Delegate;
 use App\Models\DelegateCandidateStatus;
 use App\Models\District;
 use App\Models\Group;
+use App\Models\Guarantor;
 use App\Models\Region;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -37,6 +38,10 @@ class DelegateBoard extends Component
     #[Url(as: 'category')]
     public ?string $category = null;
 
+    // NEW
+    #[Url(as: 'guarantor')]
+    public ?int $guarantorId = null;
+
     #[Url(as: 'per')]
     public int $perPage = 25;
 
@@ -59,15 +64,19 @@ class DelegateBoard extends Component
     public function updatingGroupId(): void { $this->clearSelection(); $this->resetPage(); }
     public function updatingCategory(): void { $this->clearSelection(); $this->resetPage(); }
     public function updatingCandidateId(): void { $this->clearSelection(); $this->resetPage(); }
+    public function updatingGuarantorId(): void { $this->clearSelection(); $this->resetPage(); }
 
     public function mount(): void
     {
         if (!$this->candidateId) {
-            $this->candidateId = Candidate::query()
-                ->where('is_active', true)
-                ->orderBy('sort_order')
-                ->orderBy('name')
-                ->value('id');
+            $q = Candidate::query()->where('is_active', true)->orderBy('name');
+
+            // If you DO have sort_order, keep it; otherwise remove it.
+            if (\Illuminate\Support\Facades\Schema::hasColumn('candidates', 'sort_order')) {
+                $q->orderBy('sort_order');
+            }
+
+            $this->candidateId = $q->value('id');
         }
     }
 
@@ -99,19 +108,45 @@ class DelegateBoard extends Component
             && count(array_diff($this->currentPageIds, $this->selected)) === 0;
     }
 
-    public function setStance(int $delegateId, string $stance, int $confidence = 60): void
+    /**
+     * Assign / remove guarantor for a delegate.
+     * Pass empty / 0 to remove.
+     */
+    public function assignGuarantor(int $delegateId, mixed $guarantorId): void
+    {
+        $gid = is_numeric($guarantorId) ? (int) $guarantorId : null;
+        if ($gid === 0) $gid = null;
+
+        Delegate::query()
+            ->whereKey($delegateId)
+            ->update(['guarantor_id' => $gid]);
+
+        $this->dispatch('notify', message: 'Guarantor updated.');
+    }
+
+    /**
+     * IMPORTANT: stance buttons should NOT force confidence to 70/50.
+     * If row exists: only update stance (keep confidence).
+     * If row doesn't exist: create with neutral default confidence (60).
+     */
+    public function setStance(int $delegateId, string $stance): void
     {
         if (!$this->candidateId) return;
 
         $stance = strtolower(trim($stance));
         if (!in_array($stance, ['for', 'indicative', 'against'], true)) return;
 
-        $confidence = max(0, min(100, (int) $confidence));
+        $row = DelegateCandidateStatus::query()->firstOrNew([
+            'delegate_id' => $delegateId,
+            'candidate_id' => $this->candidateId,
+        ]);
 
-        DelegateCandidateStatus::updateOrCreate(
-            ['delegate_id' => $delegateId, 'candidate_id' => $this->candidateId],
-            ['stance' => $stance, 'confidence' => $confidence]
-        );
+        if (!$row->exists) {
+            $row->confidence = 60;
+        }
+
+        $row->stance = $stance;
+        $row->save();
 
         $this->dispatch('notify', message: 'Status updated.');
     }
@@ -124,7 +159,7 @@ class DelegateBoard extends Component
 
         $row = DelegateCandidateStatus::firstOrCreate(
             ['delegate_id' => $delegateId, 'candidate_id' => $this->candidateId],
-            ['stance' => 'indicative', 'confidence' => 50]
+            ['stance' => 'indicative', 'confidence' => 60]
         );
 
         $row->confidence = $confidence;
@@ -160,12 +195,13 @@ class DelegateBoard extends Component
     private function delegateQuery(): Builder
     {
         return Delegate::query()
-            ->with(['district.region', 'groups'])
+            ->with(['district.region', 'groups', 'guarantor'])
             ->when($this->q !== '', fn (Builder $q) => $q->where('full_name', 'like', "%{$this->q}%"))
             ->when($this->category, fn (Builder $q) => $q->where('category', $this->category))
             ->when($this->districtId, fn (Builder $q) => $q->where('district_id', $this->districtId))
             ->when($this->regionId, fn (Builder $q) => $q->whereHas('district', fn (Builder $d) => $d->where('region_id', $this->regionId)))
             ->when($this->groupId, fn (Builder $q) => $q->whereHas('groups', fn (Builder $g) => $g->where('groups.id', $this->groupId)))
+            ->when($this->guarantorId, fn (Builder $q) => $q->where('guarantor_id', $this->guarantorId))
             ->orderBy('full_name');
     }
 
@@ -177,10 +213,18 @@ class DelegateBoard extends Component
     {
         if (!$this->candidateId || $delegateIds->isEmpty()) return [];
 
+        $cols = ['delegate_id', 'stance', 'confidence', 'updated_at'];
+        if (\Illuminate\Support\Facades\Schema::hasColumn('delegate_candidate_status', 'pending_stance')) {
+            $cols[] = 'pending_stance';
+        }
+        if (\Illuminate\Support\Facades\Schema::hasColumn('delegate_candidate_status', 'pending_confidence')) {
+            $cols[] = 'pending_confidence';
+        }
+
         $rows = DelegateCandidateStatus::query()
             ->where('candidate_id', $this->candidateId)
             ->whereIn('delegate_id', $delegateIds->all())
-            ->get(['delegate_id', 'stance', 'confidence', 'pending_stance', 'pending_confidence', 'updated_at']);
+            ->get($cols);
 
         $map = [];
         foreach ($rows as $r) {
@@ -188,6 +232,8 @@ class DelegateBoard extends Component
         }
         return $map;
     }
+
+    // (your spilloverForPage stays the same)
 
     /**
      * @param  Collection<int,int>  $delegateIds
@@ -242,7 +288,7 @@ class DelegateBoard extends Component
                 default => 0.0,
             };
 
-            $confInt = (int) ($s->confidence ?? 50);
+            $confInt = (int) ($s->confidence ?? 60);
             $conf = max(0.0, min(100.0, (float) $confInt)) / 100.0;
 
             $contrib = $w * $stanceVal * $conf;
@@ -272,7 +318,7 @@ class DelegateBoard extends Component
     {
         $candidates = Candidate::query()
             ->orderByDesc('is_active')
-            ->orderBy('sort_order')
+            ->when(\Illuminate\Support\Facades\Schema::hasColumn('candidates', 'sort_order'), fn ($q) => $q->orderBy('sort_order'))
             ->orderBy('name')
             ->get(['id', 'name', 'is_active']);
 
@@ -283,6 +329,13 @@ class DelegateBoard extends Component
             ->when($this->regionId, fn (Builder $q) => $q->where('region_id', $this->regionId))
             ->orderBy('name')
             ->get(['id', 'name', 'region_id']);
+
+        // FIX: use "name" (not full_name)
+        $guarantors = Guarantor::query()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get(['id', 'name']);
 
         $categories = Delegate::query()
             ->select('category')
@@ -295,7 +348,6 @@ class DelegateBoard extends Component
         $delegates = $this->delegateQuery()->paginate($this->perPage);
 
         $this->currentPageIds = $delegates->getCollection()->pluck('id')->map(fn ($v) => (int) $v)->all();
-
         $delegateIdCollection = $delegates->getCollection()->pluck('id');
 
         $statusMap = $this->statusesForPage($delegateIdCollection);
@@ -309,6 +361,7 @@ class DelegateBoard extends Component
             'regions' => $regions,
             'districts' => $districts,
             'groups' => $groups,
+            'guarantors' => $guarantors,
             'categories' => $categories,
             'delegates' => $delegates,
             'statusMap' => $statusMap,

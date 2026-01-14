@@ -5,7 +5,7 @@
     <div>
       <h1 class="text-2xl font-semibold">Delegate Board</h1>
       <p class="text-sm text-slate-600">
-        Track and update delegate support (🟢/🟡/🔴) for the selected candidate. Includes alliance spillover risk.
+        Track and update delegate support (🟢/🟡/🔴) for the selected candidate. Confidence never changes unless you change it.
       </p>
     </div>
 
@@ -29,7 +29,7 @@
 
   {{-- Filters --}}
   <div class="bg-white border rounded-lg shadow-sm p-4 space-y-3">
-    <div class="grid md:grid-cols-6 gap-2">
+    <div class="grid md:grid-cols-7 gap-2">
       <input wire:model.live.debounce.300ms="q"
              placeholder="Search delegate..."
              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10" />
@@ -69,6 +69,15 @@
               class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
         <option value="">All groups</option>
         @foreach($groups as $g)
+          <option value="{{ $g->id }}">{{ $g->name }}</option>
+        @endforeach
+      </select>
+
+      {{-- ✅ Guarantor filter (with "All" meaning no filter) --}}
+      <select wire:model.live="guarantorId"
+              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
+        <option value="">All guarantors</option>
+        @foreach($guarantors as $g)
           <option value="{{ $g->id }}">{{ $g->name }}</option>
         @endforeach
       </select>
@@ -144,10 +153,10 @@
                      @checked($selectPage) />
             </th>
             <th class="px-3 py-2 text-left">Delegate</th>
-            <th class="px-3 py-2 text-left">Phone</th>
+            <th class="px-3 py-2 text-left">Phones</th>
+            <th class="px-3 py-2 text-left">Guarantor</th>
             <th class="px-3 py-2 text-left">Location</th>
             <th class="px-3 py-2 text-left">Groups</th>
-            <th class="px-3 py-2 text-left">Notes</th>
             <th class="px-3 py-2 text-center">Status</th>
             <th class="px-3 py-2 text-left">Last updated</th>
             <th class="px-3 py-2 text-right">Actions</th>
@@ -160,7 +169,7 @@
               $s = $statusMap[$d->id] ?? null;
 
               $stance = $s?->stance ?? 'indicative';
-              $conf = (int) ($s?->confidence ?? 50);
+              $conf = (int) ($s?->confidence ?? 60);
               $pending = (bool) ($s?->pending_stance);
 
               $pill = match($stance) {
@@ -175,8 +184,8 @@
                 default => '🟡',
               };
 
-              $phone = data_get($d, 'phone') ?? data_get($d, 'phone_number') ?? data_get($d, 'mobile') ?? null;
-              $notes = data_get($d, 'notes') ?? data_get($d, 'internal_notes') ?? null;
+              $p1 = $d->phone_primary ?? $d->phone ?? null;
+              $p2 = $d->phone_secondary ?? null;
 
               $spill = (float)($spilloverMap[$d->id] ?? 0.0);
               $spillLabel = number_format($spill, 2);
@@ -208,7 +217,23 @@
               </td>
 
               <td class="px-3 py-2 text-xs text-slate-700">
-                {{ $phone ?: '—' }}
+                <div>{{ $p1 ?: '—' }}</div>
+                <div class="text-slate-500">{{ $p2 ?: '—' }}</div>
+              </td>
+
+              {{-- ✅ Per-row guarantor assignment WITH "No guarantor" --}}
+              <td class="px-3 py-2">
+                <select
+                  class="w-52 border rounded-md px-2 py-1 text-xs"
+                  wire:change="assignGuarantor({{ $d->id }}, $event.target.value)"
+                >
+                  <option value="0" @selected(!$d->guarantor_id)>No guarantor</option>
+                  @foreach($guarantors as $g)
+                    <option value="{{ $g->id }}" @selected($d->guarantor_id === $g->id)>
+                      {{ $g->name }}
+                    </option>
+                  @endforeach
+                </select>
               </td>
 
               <td class="px-3 py-2 text-xs text-slate-600">
@@ -218,10 +243,6 @@
 
               <td class="px-3 py-2 text-xs text-slate-600">
                 {{ $d->groups?->pluck('name')->implode(', ') ?: '—' }}
-              </td>
-
-              <td class="px-3 py-2 text-xs text-slate-700">
-                {{ $notes ? \Illuminate\Support\Str::limit($notes, 60) : '—' }}
               </td>
 
               <td class="px-3 py-2 text-center">
@@ -250,17 +271,18 @@
 
               <td class="px-3 py-2 text-right">
                 <div class="inline-flex items-center gap-1">
-                  <button wire:click="setStance({{ $d->id }}, 'for', 70)"
+                  {{-- ✅ stance buttons do NOT force confidence anymore --}}
+                  <button wire:click="setStance({{ $d->id }}, 'for')"
                           class="px-2 py-1 text-xs font-semibold rounded bg-emerald-50 border border-emerald-200 text-emerald-800 hover:bg-emerald-100">
                     🟢
                   </button>
 
-                  <button wire:click="setStance({{ $d->id }}, 'indicative', 50)"
+                  <button wire:click="setStance({{ $d->id }}, 'indicative')"
                           class="px-2 py-1 text-xs font-semibold rounded bg-amber-50 border border-amber-200 text-amber-900 hover:bg-amber-100">
                     🟡
                   </button>
 
-                  <button wire:click="setStance({{ $d->id }}, 'against', 70)"
+                  <button wire:click="setStance({{ $d->id }}, 'against')"
                           class="px-2 py-1 text-xs font-semibold rounded bg-red-50 border border-red-200 text-red-800 hover:bg-red-100">
                     🔴
                   </button>

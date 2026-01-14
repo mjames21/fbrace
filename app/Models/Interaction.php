@@ -9,6 +9,7 @@ class Interaction extends Model
 {
     protected $fillable = [
         'delegate_id',
+        'candidate_id',   // ✅ add
         'user_id',
         'type',
         'outcome',
@@ -23,6 +24,11 @@ class Interaction extends Model
     public function delegate(): BelongsTo
     {
         return $this->belongsTo(Delegate::class);
+    }
+
+    public function candidate(): BelongsTo
+    {
+        return $this->belongsTo(Candidate::class);
     }
 
     public function user(): BelongsTo
