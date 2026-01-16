@@ -7,11 +7,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Candidate extends Model
 {
-    protected $fillable = ['name', 'slug', 'discipline_score', 'is_active'];
+    protected $fillable = ['name', 'slug', 'discipline_score', 'is_active','sort_order','is_principal','notes'];
 
     protected $casts = [
         'discipline_score' => 'decimal:2',
         'is_active' => 'boolean',
+        'is_principal' => 'boolean',
     ];
 
     public function assessments(): HasMany

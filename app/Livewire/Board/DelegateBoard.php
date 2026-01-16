@@ -20,11 +20,19 @@ class DelegateBoard extends Component
 {
     use WithPagination;
 
+    protected $listeners = [
+        'refresh-board' => '$refresh',
+    ];
+
     #[Url(as: 'q')]
     public string $q = '';
 
     #[Url(as: 'candidate')]
     public ?int $candidateId = null;
+
+    // Principal toggle (locks to principal candidate)
+    #[Url(as: 'principal')]
+    public bool $principalOnly = true;
 
     #[Url(as: 'region')]
     public ?int $regionId = null;
@@ -38,9 +46,13 @@ class DelegateBoard extends Component
     #[Url(as: 'category')]
     public ?string $category = null;
 
-    // NEW
+    // Optional guarantor filter (if you added it)
     #[Url(as: 'guarantor')]
     public ?int $guarantorId = null;
+
+    // A–Z filter (applies only if q is empty)
+    #[Url(as: 'az')]
+    public ?string $az = null;
 
     #[Url(as: 'per')]
     public int $perPage = 25;
@@ -65,18 +77,45 @@ class DelegateBoard extends Component
     public function updatingCategory(): void { $this->clearSelection(); $this->resetPage(); }
     public function updatingCandidateId(): void { $this->clearSelection(); $this->resetPage(); }
     public function updatingGuarantorId(): void { $this->clearSelection(); $this->resetPage(); }
+    public function updatingAz(): void { $this->clearSelection(); $this->resetPage(); }
+    public function updatingPrincipalOnly(): void { $this->clearSelection(); $this->resetPage(); }
 
     public function mount(): void
     {
-        if (!$this->candidateId) {
-            $q = Candidate::query()->where('is_active', true)->orderBy('name');
+        $this->applyPrincipalLock();
 
-            // If you DO have sort_order, keep it; otherwise remove it.
-            if (\Illuminate\Support\Facades\Schema::hasColumn('candidates', 'sort_order')) {
-                $q->orderBy('sort_order');
+        // Default perPage sanity
+        if ($this->perPage < 1) $this->perPage = 25;
+    }
+
+    public function updatedPrincipalOnly(): void
+    {
+        $this->applyPrincipalLock();
+        $this->resetPage();
+    }
+
+    private function applyPrincipalLock(): void
+    {
+        if ($this->principalOnly) {
+            $principalId = Candidate::query()
+                ->where('is_principal', true)
+                ->orderBy('sort_order')
+                ->orderBy('name')
+                ->value('id');
+
+            if ($principalId) {
+                $this->candidateId = (int) $principalId;
+                return;
             }
+        }
 
-            $this->candidateId = $q->value('id');
+        // If not principal-only, ensure we have some candidate selected
+        if (!$this->candidateId) {
+            $this->candidateId = Candidate::query()
+                ->where('is_active', true)
+                ->orderBy('sort_order')
+                ->orderBy('name')
+                ->value('id');
         }
     }
 
@@ -109,25 +148,9 @@ class DelegateBoard extends Component
     }
 
     /**
-     * Assign / remove guarantor for a delegate.
-     * Pass empty / 0 to remove.
-     */
-    public function assignGuarantor(int $delegateId, mixed $guarantorId): void
-    {
-        $gid = is_numeric($guarantorId) ? (int) $guarantorId : null;
-        if ($gid === 0) $gid = null;
-
-        Delegate::query()
-            ->whereKey($delegateId)
-            ->update(['guarantor_id' => $gid]);
-
-        $this->dispatch('notify', message: 'Guarantor updated.');
-    }
-
-    /**
-     * IMPORTANT: stance buttons should NOT force confidence to 70/50.
-     * If row exists: only update stance (keep confidence).
-     * If row doesn't exist: create with neutral default confidence (60).
+     * IMPORTANT FIX:
+     * - Stance change should NOT overwrite confidence.
+     * - If row doesn't exist yet, create with default confidence (50).
      */
     public function setStance(int $delegateId, string $stance): void
     {
@@ -142,7 +165,7 @@ class DelegateBoard extends Component
         ]);
 
         if (!$row->exists) {
-            $row->confidence = 60;
+            $row->confidence = 50; // default
         }
 
         $row->stance = $stance;
@@ -157,9 +180,9 @@ class DelegateBoard extends Component
 
         $confidence = max(0, min(100, (int) $value));
 
-        $row = DelegateCandidateStatus::firstOrCreate(
+        $row = DelegateCandidateStatus::query()->firstOrCreate(
             ['delegate_id' => $delegateId, 'candidate_id' => $this->candidateId],
-            ['stance' => 'indicative', 'confidence' => 60]
+            ['stance' => 'indicative', 'confidence' => 50]
         );
 
         $row->confidence = $confidence;
@@ -194,15 +217,23 @@ class DelegateBoard extends Component
 
     private function delegateQuery(): Builder
     {
-        return Delegate::query()
+        $query = Delegate::query()
             ->with(['district.region', 'groups', 'guarantor'])
             ->when($this->q !== '', fn (Builder $q) => $q->where('full_name', 'like', "%{$this->q}%"))
             ->when($this->category, fn (Builder $q) => $q->where('category', $this->category))
             ->when($this->districtId, fn (Builder $q) => $q->where('district_id', $this->districtId))
             ->when($this->regionId, fn (Builder $q) => $q->whereHas('district', fn (Builder $d) => $d->where('region_id', $this->regionId)))
             ->when($this->groupId, fn (Builder $q) => $q->whereHas('groups', fn (Builder $g) => $g->where('groups.id', $this->groupId)))
-            ->when($this->guarantorId, fn (Builder $q) => $q->where('guarantor_id', $this->guarantorId))
-            ->orderBy('full_name');
+            ->when($this->guarantorId, fn (Builder $q) => $q->where('guarantor_id', $this->guarantorId));
+
+        // A–Z filter only when search is empty
+        $az = strtoupper((string) ($this->az ?? ''));
+        if ($this->q === '' && $az !== '') {
+            // Postgres-friendly (ilike) if you're on pgsql
+            $query->where('full_name', 'ilike', $az.'%');
+        }
+
+        return $query->orderBy('full_name');
     }
 
     /**
@@ -213,18 +244,10 @@ class DelegateBoard extends Component
     {
         if (!$this->candidateId || $delegateIds->isEmpty()) return [];
 
-        $cols = ['delegate_id', 'stance', 'confidence', 'updated_at'];
-        if (\Illuminate\Support\Facades\Schema::hasColumn('delegate_candidate_status', 'pending_stance')) {
-            $cols[] = 'pending_stance';
-        }
-        if (\Illuminate\Support\Facades\Schema::hasColumn('delegate_candidate_status', 'pending_confidence')) {
-            $cols[] = 'pending_confidence';
-        }
-
         $rows = DelegateCandidateStatus::query()
             ->where('candidate_id', $this->candidateId)
             ->whereIn('delegate_id', $delegateIds->all())
-            ->get($cols);
+            ->get(['delegate_id', 'stance', 'confidence', 'pending_stance', 'pending_confidence', 'updated_at']);
 
         $map = [];
         foreach ($rows as $r) {
@@ -233,109 +256,24 @@ class DelegateBoard extends Component
         return $map;
     }
 
-    // (your spilloverForPage stays the same)
-
-    /**
-     * @param  Collection<int,int>  $delegateIds
-     * @return array{totals: array<int,float>, details: array<int,array<int,array{source:string,weight:float,stance:string,confidence:int,contribution:float}>>}
-     */
-    private function spilloverForPage(Collection $delegateIds): array
-    {
-        if (!$this->candidateId || $delegateIds->isEmpty()) {
-            return ['totals' => [], 'details' => []];
-        }
-
-        $incoming = Alliance::query()
-            ->where('is_active', true)
-            ->where('to_candidate_id', $this->candidateId)
-            ->get(['from_candidate_id', 'weight']);
-
-        if ($incoming->isEmpty()) {
-            return ['totals' => [], 'details' => []];
-        }
-
-        $weights = [];
-        foreach ($incoming as $a) {
-            $weights[(int) $a->from_candidate_id] = max(0.0, min(1.0, (float) $a->weight));
-        }
-
-        $sourceIds = array_keys($weights);
-
-        $sourceNames = Candidate::query()
-            ->whereIn('id', $sourceIds)
-            ->pluck('name', 'id')
-            ->map(fn ($v) => (string) $v)
-            ->all();
-
-        $sourceStatuses = DelegateCandidateStatus::query()
-            ->whereIn('candidate_id', $sourceIds)
-            ->whereIn('delegate_id', $delegateIds->all())
-            ->get(['delegate_id', 'candidate_id', 'stance', 'confidence']);
-
-        $totals = [];
-        $details = [];
-
-        foreach ($sourceStatuses as $s) {
-            $delegateId = (int) $s->delegate_id;
-            $sourceId = (int) $s->candidate_id;
-
-            $w = $weights[$sourceId] ?? 0.0;
-            if ($w <= 0.0) continue;
-
-            $stanceVal = match ($s->stance) {
-                'for' => 1.0,
-                'indicative' => 0.5,
-                default => 0.0,
-            };
-
-            $confInt = (int) ($s->confidence ?? 60);
-            $conf = max(0.0, min(100.0, (float) $confInt)) / 100.0;
-
-            $contrib = $w * $stanceVal * $conf;
-            if ($contrib <= 0.0) continue;
-
-            $totals[$delegateId] = ($totals[$delegateId] ?? 0.0) + $contrib;
-
-            $details[$delegateId] ??= [];
-            $details[$delegateId][] = [
-                'source' => $sourceNames[$sourceId] ?? ('Candidate '.$sourceId),
-                'weight' => $w,
-                'stance' => (string) $s->stance,
-                'confidence' => $confInt,
-                'contribution' => $contrib,
-            ];
-        }
-
-        foreach ($details as $delegateId => $rows) {
-            usort($rows, fn ($a, $b) => $b['contribution'] <=> $a['contribution']);
-            $details[$delegateId] = $rows;
-        }
-
-        return ['totals' => $totals, 'details' => $details];
-    }
-
     public function render()
     {
+        $this->applyPrincipalLock();
+
         $candidates = Candidate::query()
             ->orderByDesc('is_active')
-            ->when(\Illuminate\Support\Facades\Schema::hasColumn('candidates', 'sort_order'), fn ($q) => $q->orderBy('sort_order'))
+            ->orderByDesc('is_principal')
+            ->orderBy('sort_order')
             ->orderBy('name')
-            ->get(['id', 'name', 'is_active']);
+            ->get(['id', 'name', 'is_active', 'is_principal']);
 
         $regions = Region::orderBy('name')->get(['id', 'name']);
-        $groups = Group::orderBy('name')->get(['id', 'name']);
+        $groups  = Group::orderBy('name')->get(['id', 'name']);
 
         $districts = District::query()
             ->when($this->regionId, fn (Builder $q) => $q->where('region_id', $this->regionId))
             ->orderBy('name')
             ->get(['id', 'name', 'region_id']);
-
-        // FIX: use "name" (not full_name)
-        $guarantors = Guarantor::query()
-            ->where('is_active', true)
-            ->orderBy('sort_order')
-            ->orderBy('name')
-            ->get(['id', 'name']);
 
         $categories = Delegate::query()
             ->select('category')
@@ -345,28 +283,31 @@ class DelegateBoard extends Component
             ->pluck('category')
             ->all();
 
-        $delegates = $this->delegateQuery()->paginate($this->perPage);
+        $guarantors = Guarantor::query()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get(['id', 'name']);
+
+        // ALL = 100000
+        $per = $this->perPage >= 100000 ? 100000 : $this->perPage;
+
+        $delegates = $this->delegateQuery()->paginate($per);
 
         $this->currentPageIds = $delegates->getCollection()->pluck('id')->map(fn ($v) => (int) $v)->all();
+
         $delegateIdCollection = $delegates->getCollection()->pluck('id');
-
         $statusMap = $this->statusesForPage($delegateIdCollection);
-
-        $spill = $this->spilloverForPage($delegateIdCollection);
-        $spilloverMap = $spill['totals'];
-        $spilloverDetailsMap = $spill['details'];
 
         return view('livewire.board.delegate-board', [
             'candidates' => $candidates,
             'regions' => $regions,
             'districts' => $districts,
             'groups' => $groups,
-            'guarantors' => $guarantors,
             'categories' => $categories,
+            'guarantors' => $guarantors,
             'delegates' => $delegates,
             'statusMap' => $statusMap,
-            'spilloverMap' => $spilloverMap,
-            'spilloverDetailsMap' => $spilloverDetailsMap,
         ])->layout('layouts.app');
     }
 }

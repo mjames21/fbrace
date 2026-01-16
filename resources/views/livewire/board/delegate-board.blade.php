@@ -1,3 +1,4 @@
+{{-- resources/views/livewire/board/delegate-board.blade.php --}}
 <div class="p-6 space-y-6">
   @section('title', 'Delegate Board — '.config('app.name'))
 
@@ -5,7 +6,8 @@
     <div>
       <h1 class="text-2xl font-semibold">Delegate Board</h1>
       <p class="text-sm text-slate-600">
-        Track and update delegate support (🟢/🟡/🔴) for the selected candidate. Confidence never changes unless you change it.
+        Track and update delegate support (🟢/🟡/🔴) for the selected candidate.
+        Confidence never changes unless you change it.
       </p>
     </div>
 
@@ -34,10 +36,30 @@
              placeholder="Search delegate..."
              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10" />
 
+      {{-- Principal vs Other --}}
+      <div class="border rounded-md px-3 py-2 text-sm flex items-center justify-between gap-3">
+        <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" class="rounded border-gray-300"
+                 wire:model.live="principalOnly">
+          <span class="font-semibold text-slate-700">Principal</span>
+        </label>
+
+        <span class="text-xs text-slate-500">
+          {{ $principalOnly ? 'Locked' : 'Choose' }}
+        </span>
+      </div>
+
+      {{-- Candidate (disabled when principalOnly) --}}
       <select wire:model.live="candidateId"
-              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
+              @disabled($principalOnly)
+              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 disabled:bg-slate-50 disabled:text-slate-500">
         @foreach($candidates as $c)
-          <option value="{{ $c->id }}">{{ $c->name }}{{ $c->is_active ? '' : ' (inactive)' }}</option>
+          @php
+            $label = $c->name;
+            if (!empty($c->is_principal)) $label .= ' (principal)';
+            elseif (empty($c->is_active)) $label .= ' (inactive)';
+          @endphp
+          <option value="{{ $c->id }}">{{ $label }}</option>
         @endforeach
       </select>
 
@@ -73,14 +95,16 @@
         @endforeach
       </select>
 
-      {{-- ✅ Guarantor filter (with "All" meaning no filter) --}}
-      <select wire:model.live="guarantorId"
-              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
-        <option value="">All guarantors</option>
-        @foreach($guarantors as $g)
-          <option value="{{ $g->id }}">{{ $g->name }}</option>
-        @endforeach
-      </select>
+      {{-- Optional guarantor filter --}}
+      @isset($guarantors)
+        <select wire:model.live="guarantorId"
+                class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
+          <option value="">All guarantors</option>
+          @foreach($guarantors as $g)
+            <option value="{{ $g->id }}">{{ $g->name }}</option>
+          @endforeach
+        </select>
+      @endisset
     </div>
 
     <div class="flex flex-wrap items-center gap-2 text-xs text-slate-600">
@@ -95,6 +119,8 @@
         <option value="25">25</option>
         <option value="50">50</option>
         <option value="100">100</option>
+        <option value="500">500</option>
+        <option value="0">All</option>
       </select>
 
       <div class="ml-auto flex items-center gap-2">
@@ -109,6 +135,30 @@
           </span>
         @endif
       </div>
+    </div>
+  </div>
+
+  {{-- A–Z --}}
+  <div class="bg-white border rounded-lg shadow-sm p-3">
+    @php
+      $letters = array_merge(['ALL'], range('A','Z'));
+      $current = $az ?: 'ALL';
+    @endphp
+
+    <div class="flex flex-wrap gap-1">
+      @foreach($letters as $L)
+        @php $active = strtoupper($current) === $L; @endphp
+
+        <button
+          wire:click="$set('az', '{{ $L === 'ALL' ? '' : $L }}')"
+          class="px-2 py-1 text-xs rounded border {{ $active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white hover:bg-slate-50 border-slate-200' }}">
+          {{ $L }}
+        </button>
+      @endforeach
+    </div>
+
+    <div class="text-[11px] text-slate-500 mt-2">
+      A–Z filter applies only when search is empty.
     </div>
   </div>
 
@@ -169,7 +219,7 @@
               $s = $statusMap[$d->id] ?? null;
 
               $stance = $s?->stance ?? 'indicative';
-              $conf = (int) ($s?->confidence ?? 60);
+              $conf = (int) ($s?->confidence ?? 50);
               $pending = (bool) ($s?->pending_stance);
 
               $pill = match($stance) {
@@ -184,22 +234,8 @@
                 default => '🟡',
               };
 
-              $p1 = $d->phone_primary ?? $d->phone ?? null;
-              $p2 = $d->phone_secondary ?? null;
-
-              $spill = (float)($spilloverMap[$d->id] ?? 0.0);
-              $spillLabel = number_format($spill, 2);
-
-              $spillRows = $spilloverDetailsMap[$d->id] ?? [];
-              $spillTitle = 'Alliance spillover contributors:';
-              foreach (array_slice($spillRows, 0, 6) as $sr) {
-                $pct = (int) round(((float)$sr['weight']) * 100);
-                $contrib = number_format((float)$sr['contribution'], 3);
-                $spillTitle .= "\n- {$sr['source']} ({$pct}%) {$sr['stance']} @{$sr['confidence']} → {$contrib}";
-              }
-              if (count($spillRows) > 6) {
-                $spillTitle .= "\n…+" . (count($spillRows) - 6) . " more";
-              }
+              $phone1 = data_get($d, 'phone_primary') ?? null;
+              $phone2 = data_get($d, 'phone_secondary') ?? null;
 
               $lastUpdated = $s?->updated_at ? $s->updated_at->diffForHumans() : '—';
             @endphp
@@ -217,23 +253,12 @@
               </td>
 
               <td class="px-3 py-2 text-xs text-slate-700">
-                <div>{{ $p1 ?: '—' }}</div>
-                <div class="text-slate-500">{{ $p2 ?: '—' }}</div>
+                <div>{{ $phone1 ?: '—' }}</div>
+                <div class="text-slate-500">{{ $phone2 ?: '—' }}</div>
               </td>
 
-              {{-- ✅ Per-row guarantor assignment WITH "No guarantor" --}}
-              <td class="px-3 py-2">
-                <select
-                  class="w-52 border rounded-md px-2 py-1 text-xs"
-                  wire:change="assignGuarantor({{ $d->id }}, $event.target.value)"
-                >
-                  <option value="0" @selected(!$d->guarantor_id)>No guarantor</option>
-                  @foreach($guarantors as $g)
-                    <option value="{{ $g->id }}" @selected($d->guarantor_id === $g->id)>
-                      {{ $g->name }}
-                    </option>
-                  @endforeach
-                </select>
+              <td class="px-3 py-2 text-xs text-slate-700">
+                {{ $d->guarantor?->name ?? 'No guarantor' }}
               </td>
 
               <td class="px-3 py-2 text-xs text-slate-600">
@@ -246,23 +271,14 @@
               </td>
 
               <td class="px-3 py-2 text-center">
-                <div class="inline-flex items-center gap-2">
-                  <span class="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border {{ $pill }}"
-                        title="Confidence: {{ $conf }}{{ $pending ? ' | Pending exists' : '' }}">
-                    <span>{{ $emoji }}</span>
-                    <span class="font-semibold">{{ $conf }}</span>
-                    @if($pending)
-                      <span class="ml-1 inline-flex items-center justify-center w-4 h-4 rounded-full bg-slate-900 text-white text-[10px]">P</span>
-                    @endif
-                  </span>
-
-                  @if($spill >= 0.10)
-                    <span class="text-[11px] px-2 py-0.5 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-800"
-                          title="{{ $spillTitle }}">
-                      Spill {{ $spillLabel }}
-                    </span>
+                <span class="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border {{ $pill }}"
+                      title="Confidence: {{ $conf }}{{ $pending ? ' | Pending exists' : '' }}">
+                  <span>{{ $emoji }}</span>
+                  <span class="font-semibold">{{ $conf }}</span>
+                  @if($pending)
+                    <span class="ml-1 inline-flex items-center justify-center w-4 h-4 rounded-full bg-slate-900 text-white text-[10px]">P</span>
                   @endif
-                </div>
+                </span>
               </td>
 
               <td class="px-3 py-2 text-xs text-slate-600">
@@ -271,18 +287,18 @@
 
               <td class="px-3 py-2 text-right">
                 <div class="inline-flex items-center gap-1">
-                  {{-- ✅ stance buttons do NOT force confidence anymore --}}
-                  <button wire:click="setStance({{ $d->id }}, 'for')"
+                  {{-- IMPORTANT: pass CURRENT confidence so clicking stance does NOT force 70/50 --}}
+                  <button wire:click="setStance({{ $d->id }}, 'for', {{ $conf }})"
                           class="px-2 py-1 text-xs font-semibold rounded bg-emerald-50 border border-emerald-200 text-emerald-800 hover:bg-emerald-100">
                     🟢
                   </button>
 
-                  <button wire:click="setStance({{ $d->id }}, 'indicative')"
+                  <button wire:click="setStance({{ $d->id }}, 'indicative', {{ $conf }})"
                           class="px-2 py-1 text-xs font-semibold rounded bg-amber-50 border border-amber-200 text-amber-900 hover:bg-amber-100">
                     🟡
                   </button>
 
-                  <button wire:click="setStance({{ $d->id }}, 'against')"
+                  <button wire:click="setStance({{ $d->id }}, 'against', {{ $conf }})"
                           class="px-2 py-1 text-xs font-semibold rounded bg-red-50 border border-red-200 text-red-800 hover:bg-red-100">
                     🔴
                   </button>
@@ -312,7 +328,12 @@
     </div>
 
     <div class="px-4 py-3 border-t">
-      {{ $delegates->links() }}
+      {{-- When perPage=0 (All), your component should return a paginator-like object or skip links.
+           If you handle All with ->paginate(PHP_INT_MAX), links will still render but can be huge.
+           Best: if All, use ->get() and hide links in the component. --}}
+      @if(method_exists($delegates, 'links'))
+        {{ $delegates->links() }}
+      @endif
     </div>
   </div>
 
