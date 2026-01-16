@@ -120,6 +120,21 @@
           </svg>
           <span>Districts</span>
         </a>
+      
+          <a href="{{ route('manage.categories') }}"
+           class="flex items-center gap-2 px-4 py-2 hover:bg-slate-50
+                  {{ request()->routeIs('manage.categories*') ? 'bg-slate-100 font-semibold border-l-4 border-slate-900' : 'border-l-4 border-transparent' }}">
+          <svg class="w-4 h-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 7h16" />
+            <path d="M4 12h16" />
+            <path d="M4 17h16" />
+            <path d="M7 7v10" />
+            <path d="M12 7v10" />
+            <path d="M17 7v10" />
+          </svg>
+          <span>Categories</span>
+        </a>
 
         <a href="{{ route('manage.groups') }}"
            class="flex items-center gap-2 px-4 py-2 hover:bg-slate-50
@@ -155,7 +170,16 @@
           </svg>
           <span>Delegates</span>
         </a>
-
+        <a href="{{ route('manage.delegates.create') }}"
+           class="flex items-center gap-2 px-4 py-2 hover:bg-slate-50
+                  {{ request()->routeIs('manage.delegates.create') ? 'bg-slate-100 font-semibold border-l-4 border-slate-900' : 'border-l-4 border-transparent' }}">
+          <svg class="w-4 h-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+          </svg>
+          <span>Add Delegate</span>
+        </a>
         <a href="{{ route('manage.candidates') }}"
            class="flex items-center gap-2 px-4 py-2 hover:bg-slate-50
                   {{ request()->routeIs('manage.candidates') ? 'bg-slate-100 font-semibold border-l-4 border-slate-900' : 'border-l-4 border-transparent' }}">
