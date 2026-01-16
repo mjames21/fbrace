@@ -15,6 +15,9 @@ use App\Livewire\Reports\StatusHistory;
 use App\Livewire\Manage\Guarantors;
 use App\Livewire\Manage\GuarantorShow;
 
+use App\Livewire\Manage\Categories as ManageCategories;
+use App\Livewire\Manage\DelegatesCreate;
+
 Route::get('/', function () {
     return view('welcome');
 })->name('home');
@@ -48,6 +51,9 @@ Route::get('/reports/status-history', StatusHistory::class)->name('reports.statu
 Route::get('/reports/status-history/export/csv', [StatusHistoryExportController::class, 'csv'])
         ->name('reports.status-history.export.csv');
 
-    Route::get('/reports/status-history/export/pdf', [StatusHistoryExportController::class, 'pdf'])
+Route::get('/reports/status-history/export/pdf', [StatusHistoryExportController::class, 'pdf'])
         ->name('reports.status-history.export.pdf');
+
+Route::get('/manage/categories', ManageCategories::class)->name('manage.categories');
+Route::get('/manage/delegates/create', DelegatesCreate::class)->name('manage.delegates.create');
 });

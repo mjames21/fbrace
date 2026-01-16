@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use App\Models\Category;
 
 class Delegate extends Model
 {
@@ -65,5 +66,9 @@ class Delegate extends Model
     public function guarantor(): BelongsTo
     {
         return $this->belongsTo(Guarantor::class);
+    }
+    public function categoryModel(): BelongsTo
+    {
+        return $this->belongsTo(Category::class, 'category_id');
     }
 }
