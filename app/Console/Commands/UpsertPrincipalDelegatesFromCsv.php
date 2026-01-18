@@ -1,461 +1,327 @@
 <?php
-// File: app/Console/Commands/UpsertPrincipalDelegatesFromCsv.php
-
-declare(strict_types=1);
 
 namespace App\Console\Commands;
 
 use App\Models\Candidate;
 use App\Models\Delegate;
+use App\Models\DelegateCandidateStatus;
 use App\Models\District;
-use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
 
-final class UpsertPrincipalDelegatesFromCsv extends Command
+class UpsertPrincipalDelegatesFromCsv extends Command
 {
     protected $signature = 'delegates:upsert-principal
-        {csv : Path relative to storage/app (e.g. imports/delegates.csv) OR absolute path}
-        {--candidate= : Candidate ID (default: principal candidate)}
-        {--stance=for : Default stance to set for matched rows (for|indicative|against)}
-        {--confidence=100 : Default confidence to set for matched rows (0-100)}
-        {--district= : Only process rows whose district matches this (e.g. "Tonkolili")}
-        {--unmatched= : Output path relative to storage/app (default: imports/unmatched_TIMESTAMP.csv)}
-        {--matched= : Output path relative to storage/app (default: imports/matched_TIMESTAMP.csv)}
-        {--dry-run : Do not write changes; only report + export unmatched/matched}
-    ';
+        {csv : Path to CSV file (relative or absolute)}
+        {--candidate= : Candidate ID (defaults to principal candidate if exists)}
+        {--stance=for : Default stance for matched rows (for|indicative|against)}
+        {--confidence=100 : Default confidence (0-100)}
+        {--strict : Strict match requires full_name + district match (recommended)}
+        {--dry-run : Parse and report only, do not write to DB}';
 
-    protected $description = 'STRICT UPSERT-only: match delegates by (full_name + district) with punctuation-insensitive name normalization; update phones; upsert principal candidate status; export unmatched + matched CSVs.';
+    protected $description = 'Match delegates by (full name + district) from CSV, update phones/district, and upsert principal candidate status (no creation).';
 
     public function handle(): int
     {
-        $csvPath = $this->resolveCsvPath((string) $this->argument('csv'));
-        if ($csvPath === '' || !File::exists($csvPath)) {
-            $this->error("CSV not found: {$csvPath}");
+        $csvArg = (string) $this->argument('csv');
+        $csvPath = $this->resolvePath($csvArg);
+
+        if (!File::exists($csvPath)) {
+            $this->error("CSV not found at: {$csvPath}");
             return self::FAILURE;
         }
 
-        $candidateId = $this->resolveCandidateId();
-        if (!$candidateId) {
-            $this->error("No principal candidate found. Set candidates.is_principal=1 OR pass --candidate=ID");
-            return self::FAILURE;
-        }
+        $dryRun = (bool) $this->option('dry-run');
+        $strict = (bool) $this->option('strict');
 
         $stance = strtolower(trim((string) $this->option('stance')));
         if (!in_array($stance, ['for', 'indicative', 'against'], true)) {
-            $this->error("Invalid --stance. Use: for|indicative|against");
+            $this->error("Invalid --stance={$stance}. Use for|indicative|against");
             return self::FAILURE;
         }
 
-        $confidence = max(0, min(100, (int) $this->option('confidence')));
-        $dryRun = (bool) $this->option('dry-run');
+        $confidence = (int) $this->option('confidence');
+        $confidence = max(0, min(100, $confidence));
 
-        $districtFilter = (string) ($this->option('district') ?? '');
-        $districtFilterNorm = $districtFilter !== '' ? $this->districtKey($this->normDistrict($districtFilter)) : null;
-
-        $unmatchedPath = $this->resolveUnmatchedPath((string) ($this->option('unmatched') ?? ''));
-        $matchedPath = $this->resolveMatchedPath((string) ($this->option('matched') ?? ''));
-
-        $districtMap = $this->districtNameToIdMap();
-        $now = CarbonImmutable::now();
-
-        $in = new \SplFileObject($csvPath, 'r');
-        $in->setFlags(\SplFileObject::READ_CSV | \SplFileObject::SKIP_EMPTY | \SplFileObject::DROP_NEW_LINE);
-
-        $header = null;
-        $rowNum = 0;
-
-        $processed = 0;
-        $matched = 0;
-        $updatedDelegates = 0;
-        $upsertedStatuses = 0;
-        $unmatched = 0;
-        $skippedByDistrict = 0;
-
-        $unmatchedOut = $this->openWriter($unmatchedPath);
-        fputcsv($unmatchedOut, [
-            'row_number',
-            'full_name',
-            'district',
-            'phone_primary',
-            'phone_secondary',
-            'reason',
-        ]);
-
-        $matchedOut = $this->openWriter($matchedPath);
-        fputcsv($matchedOut, [
-            'row_number',
-            'full_name',
-            'district',
-            'delegate_id',
-            'delegate_updated',
-            'status_upserted',
-            'phone_primary',
-            'phone_secondary',
-        ]);
+        $candidateId = $this->resolveCandidateId();
+        if (!$candidateId) {
+            $this->error("No candidate found. Provide --candidate=<id> or mark one candidate as principal.");
+            return self::FAILURE;
+        }
 
         $this->info("CSV: {$csvPath}");
         $this->info("Candidate ID: {$candidateId}");
         $this->info("Default stance/confidence: {$stance} / {$confidence}");
-        if ($districtFilterNorm !== null) {
-            $this->info("District filter: {$districtFilter}");
+        $this->info("Mode: " . ($dryRun ? 'DRY-RUN' : 'WRITE'));
+        $this->info("Match: " . ($strict ? 'STRICT (name+district)' : 'SMART (name+district, fallback unique name)'));
+        $this->newLine();
+
+        // Build district map: normalized name -> id
+        $districtMap = District::query()
+            ->get(['id', 'name'])
+            ->mapWithKeys(fn ($d) => [$this->normDistrict($d->name) => (int) $d->id])
+            ->all();
+
+        // Build delegate index:
+        // key = norm(name) | norm(districtNameFromDB)
+        $delegates = Delegate::query()
+            ->with(['district:id,name'])
+            ->get(['id', 'full_name', 'district_id', 'phone_primary', 'phone_secondary']);
+
+        $byKey = [];
+        $byName = []; // name -> [delegateIds]
+        foreach ($delegates as $del) {
+            $nName = $this->normName($del->full_name);
+
+            $distName = $del->district?->name ?? '';
+            $nDist = $this->normDistrict($distName);
+
+            $key = $nName . '|' . $nDist;
+            $byKey[$key] = (int) $del->id;
+
+            $byName[$nName] ??= [];
+            $byName[$nName][] = (int) $del->id;
         }
-        $this->info("Matched export: {$matchedPath}");
-        $this->info("Unmatched export: {$unmatchedPath}");
-        $this->info($dryRun ? "Mode: DRY RUN (no writes)" : "Mode: WRITE");
 
-        DB::beginTransaction();
+        $ts = Carbon::now()->format('Ymd_His');
+        $outDir = storage_path('app/imports');
+        File::ensureDirectoryExists($outDir);
 
-        try {
-            while (!$in->eof()) {
-                $row = $in->fgetcsv();
-                if ($row === false || $row === [null]) {
+        $matchedPath = "{$outDir}/matched_{$ts}.csv";
+        $unmatchedPath = "{$outDir}/unmatched_{$ts}.csv";
+
+        $matchedRows = [];
+        $unmatchedRows = [];
+
+        $processed = 0;
+        $matched = 0;
+        $delegatesUpdated = 0;
+        $statusesUpserted = 0;
+
+        $rows = $this->readCsv($csvPath);
+
+        DB::transaction(function () use (
+            $rows,
+            $districtMap,
+            $byKey,
+            $byName,
+            $candidateId,
+            $stance,
+            $confidence,
+            $dryRun,
+            $strict,
+            &$processed,
+            &$matched,
+            &$delegatesUpdated,
+            &$statusesUpserted,
+            &$matchedRows,
+            &$unmatchedRows
+        ) {
+            foreach ($rows as $row) {
+                $processed++;
+
+                $fullName = trim((string)($row['full_name'] ?? ''));
+                $district = trim((string)($row['district'] ?? ''));
+
+                // Skip empty lines / heading rows
+                if ($fullName === '') {
+                    $unmatchedRows[] = $row + ['reason' => 'blank full_name'];
                     continue;
                 }
 
-                $rowNum++;
+                $nName = $this->normName($fullName);
+                $nDist = $this->normDistrict($district);
+                $key = $nName . '|' . $nDist;
 
-                if ($header === null) {
-                    $header = $this->normalizeHeaderRow($row);
-                    continue;
-                }
+                $delegateId = $byKey[$key] ?? null;
 
-                $data = $this->rowToAssoc($header, $row);
-
-                $rawDistrict = (string) ($data['district'] ?? '');
-                $districtName = $this->normDistrict($rawDistrict);
-                $districtKey = $districtName !== '' ? $this->districtKey($districtName) : '';
-
-                if ($districtFilterNorm !== null) {
-                    if ($districtKey === '' || $districtKey !== $districtFilterNorm) {
-                        $skippedByDistrict++;
-                        continue;
+                // If not strict, allow fallback by unique name
+                if (!$delegateId && !$strict) {
+                    $ids = $byName[$nName] ?? [];
+                    if (count($ids) === 1) {
+                        $delegateId = $ids[0];
                     }
                 }
 
-                $processed++;
-
-                $rawName = (string) ($data['full_name'] ?? $data['name'] ?? '');
-                $nameNormReadable = $this->normName($rawName);
-                $nameKey = $this->nameKey($nameNormReadable);
-
-                if ($nameNormReadable === '' || $districtName === '') {
-                    $unmatched++;
-                    fputcsv($unmatchedOut, [
-                        $rowNum,
-                        $nameNormReadable,
-                        $districtName,
-                        (string) ($data['phone_primary'] ?? ''),
-                        (string) ($data['phone_secondary'] ?? ''),
-                        'missing_full_name_or_district',
-                    ]);
-                    continue;
-                }
-
-                $districtId = $districtMap[$districtKey] ?? null;
-                if (!$districtId) {
-                    $unmatched++;
-                    fputcsv($unmatchedOut, [
-                        $rowNum,
-                        $nameNormReadable,
-                        $districtName,
-                        (string) ($data['phone_primary'] ?? ''),
-                        (string) ($data['phone_secondary'] ?? ''),
-                        'district_not_found',
-                    ]);
-                    continue;
-                }
-
-                // STRICT MATCH: (normalized nameKey) + district_id
-                $delegate = Delegate::query()
-                    ->whereRaw(
-                        "regexp_replace(lower(full_name), '[^a-z0-9]+', '', 'g') = ?",
-                        [$nameKey]
-                    )
-                    ->where('district_id', $districtId)
-                    ->first(['id', 'district_id', 'phone_primary', 'phone_secondary']);
-
-                if (!$delegate) {
-                    $unmatched++;
-                    fputcsv($unmatchedOut, [
-                        $rowNum,
-                        $nameNormReadable,
-                        $districtName,
-                        (string) ($data['phone_primary'] ?? ''),
-                        (string) ($data['phone_secondary'] ?? ''),
-                        'delegate_not_found',
-                    ]);
+                if (!$delegateId) {
+                    $unmatchedRows[] = $row + [
+                        'reason' => $strict ? 'no match on (name+district)' : 'no match (name+district or unique-name fallback)',
+                    ];
                     continue;
                 }
 
                 $matched++;
 
-                $phone1 = $this->normPhone((string) ($data['phone_primary'] ?? $data['phone1'] ?? $data['phone'] ?? ''));
-                $phone2 = $this->normPhone((string) ($data['phone_secondary'] ?? $data['phone2'] ?? ''));
+                // Optional phones
+                $phone1 = trim((string)($row['phone_primary'] ?? ''));
+                $phone2 = trim((string)($row['phone_secondary'] ?? ''));
+
+                $districtIdFromCsv = $districtMap[$nDist] ?? null;
 
                 $delegatePayload = [];
+                if ($phone1 !== '') $delegatePayload['phone_primary'] = $phone1;
+                if ($phone2 !== '') $delegatePayload['phone_secondary'] = $phone2;
+                if ($districtIdFromCsv) $delegatePayload['district_id'] = $districtIdFromCsv;
 
-                if ((int) $delegate->district_id !== (int) $districtId) {
-                    $delegatePayload['district_id'] = $districtId;
-                }
-                if ($phone1 !== '') {
-                    $delegatePayload['phone_primary'] = $phone1;
-                }
-                if ($phone2 !== '') {
-                    $delegatePayload['phone_secondary'] = $phone2;
+                if (!$dryRun && !empty($delegatePayload)) {
+                    $updated = Delegate::query()->whereKey($delegateId)->update($delegatePayload);
+                    if ($updated) $delegatesUpdated += 1;
                 }
 
-                $didUpdateDelegate = false;
-                if (!empty($delegatePayload)) {
-                    $updatedDelegates++;
-                    $didUpdateDelegate = true;
-                    if (!$dryRun) {
-                        Delegate::query()->whereKey((int) $delegate->id)->update($delegatePayload);
-                    }
-                }
-
-                $finalStance = strtolower(trim((string) ($data['stance'] ?? $stance)));
-                if (!in_array($finalStance, ['for', 'indicative', 'against'], true)) {
-                    $finalStance = $stance;
-                }
-
-                $finalConfidence = $confidence;
-                if (isset($data['confidence']) && $data['confidence'] !== '' && $data['confidence'] !== null) {
-                    $finalConfidence = max(0, min(100, (int) $data['confidence']));
-                }
-
-                $upsertedStatuses++;
+                // Upsert status for principal candidate
                 if (!$dryRun) {
-                    $this->upsertDelegateCandidateStatus(
-                        delegateId: (int) $delegate->id,
-                        candidateId: (int) $candidateId,
-                        stance: $finalStance,
-                        confidence: $finalConfidence,
-                        now: $now
-                    );
+                    $status = DelegateCandidateStatus::query()->firstOrNew([
+                        'delegate_id' => $delegateId,
+                        'candidate_id' => $candidateId,
+                    ]);
+
+                    // If new, set defaults; if existing, overwrite to your requested defaults
+                    $status->stance = $stance;
+                    $status->confidence = $confidence;
+                    $status->last_confirmed_at = now();
+                    $status->save();
+
+                    $statusesUpserted += 1;
                 }
 
-                fputcsv($matchedOut, [
-                    $rowNum,
-                    $nameNormReadable,
-                    $districtName,
-                    (int) $delegate->id,
-                    $didUpdateDelegate ? 1 : 0,
-                    1,
-                    $phone1,
-                    $phone2,
-                ]);
+                $matchedRows[] = $row + [
+                    'matched_delegate_id' => $delegateId,
+                    'matched_key' => $key,
+                ];
             }
+        });
 
-            if ($dryRun) {
-                DB::rollBack();
-            } else {
-                DB::commit();
-            }
-        } catch (\Throwable $e) {
-            DB::rollBack();
-            $this->error($e->getMessage());
-            return self::FAILURE;
-        } finally {
-            fclose($unmatchedOut);
-            fclose($matchedOut);
-        }
+        $this->writeCsv($matchedPath, $matchedRows);
+        $this->writeCsv($unmatchedPath, $unmatchedRows);
 
-        $this->newLine();
         $this->info("DONE");
-        $this->line("Processed rows: {$processed}" . ($districtFilterNorm ? " (district-filtered; skipped {$skippedByDistrict})" : ""));
-        $this->line("Matched rows: {$matched}");
-        $this->line("Delegates updated (phones/district): {$updatedDelegates}");
-        $this->line("Statuses upserted: {$upsertedStatuses}");
-        $this->line("Unmatched rows exported: {$unmatched}");
-        $this->line("Matched CSV: {$matchedPath}");
-        $this->line("Unmatched CSV: {$unmatchedPath}");
+        $this->info("Processed rows: {$processed}");
+        $this->info("Matched rows: {$matched}");
+        $this->info("Delegates updated (phones/district): {$delegatesUpdated}");
+        $this->info("Statuses upserted: {$statusesUpserted}");
+        $this->info("Matched CSV: {$matchedPath}");
+        $this->info("Unmatched CSV: {$unmatchedPath}");
 
         return self::SUCCESS;
-    }
-
-    private function resolveCsvPath(string $arg): string
-    {
-        $arg = trim($arg);
-        if ($arg === '') {
-            return '';
-        }
-
-        if (File::exists($arg)) {
-            return $arg;
-        }
-
-        return storage_path('app/' . ltrim($arg, '/'));
     }
 
     private function resolveCandidateId(): ?int
     {
         $opt = $this->option('candidate');
-        if ($opt !== null && $opt !== '') {
-            return (int) $opt;
-        }
+        if ($opt !== null && $opt !== '') return (int) $opt;
 
-        return Candidate::query()
-            ->where('is_principal', true)
-            ->orderByDesc('is_active')
-            ->orderBy('sort_order')
-            ->value('id');
+        // Prefer principal if you have that column
+        $principal = Candidate::query()->where('is_principal', true)->first(['id']);
+        if ($principal) return (int) $principal->id;
+
+        // fallback: first active candidate
+        $active = Candidate::query()->where('is_active', true)->orderBy('sort_order')->first(['id']);
+        return $active ? (int) $active->id : null;
     }
 
-    private function resolveUnmatchedPath(string $relativeOrEmpty): string
+    private function resolvePath(string $p): string
     {
-        if ($relativeOrEmpty !== '') {
-            return storage_path('app/' . ltrim($relativeOrEmpty, '/'));
-        }
-
-        $ts = CarbonImmutable::now()->format('Ymd_His');
-        return storage_path("app/imports/unmatched_{$ts}.csv");
-    }
-
-    private function resolveMatchedPath(string $relativeOrEmpty): string
-    {
-        if ($relativeOrEmpty !== '') {
-            return storage_path('app/' . ltrim($relativeOrEmpty, '/'));
-        }
-
-        $ts = CarbonImmutable::now()->format('Ymd_His');
-        return storage_path("app/imports/matched_{$ts}.csv");
-    }
-
-    /** @return array<string,int> */
-    private function districtNameToIdMap(): array
-    {
-        $map = [];
-        District::query()->get(['id', 'name'])->each(function (District $d) use (&$map) {
-            $map[$this->districtKey((string) $d->name)] = (int) $d->id;
-        });
-        return $map;
-    }
-
-    private function districtKey(string $name): string
-    {
-        return mb_strtolower(trim(preg_replace('/\s+/', ' ', $name) ?? ''));
+        // allow relative to project root
+        if (Str::startsWith($p, ['/','\\'])) return $p;
+        return base_path($p);
     }
 
     /**
-     * Name normalization:
-     * - lowercase
-     * - replace any non [a-z0-9] with spaces
-     * - collapse spaces
+     * Read CSV as array of associative arrays.
+     * Expected headers: full_name, district, phone_primary, phone_secondary (phones optional)
      */
-    private function normName(string $s): string
+    private function readCsv(string $path): array
     {
-        $s = mb_strtolower(trim($s));
-        $s = preg_replace('/[^a-z0-9]+/u', ' ', $s) ?? '';
-        $s = trim(preg_replace('/\s+/u', ' ', $s) ?? '');
-        return $s;
+        $fh = fopen($path, 'rb');
+        if (!$fh) {
+            throw new \RuntimeException("Failed to open CSV: {$path}");
+        }
+
+        $headers = null;
+        $rows = [];
+
+        while (($data = fgetcsv($fh)) !== false) {
+            if ($headers === null) {
+                $headers = array_map(fn ($h) => trim((string)$h), $data);
+                continue;
+            }
+
+            $row = [];
+            foreach ($headers as $i => $h) {
+                $row[$h] = $data[$i] ?? null;
+            }
+
+            $rows[] = $row;
+        }
+
+        fclose($fh);
+        return $rows;
     }
 
-    /** DB match key: remove spaces for punctuation-insensitive matching. */
-    private function nameKey(string $normalizedName): string
+    private function writeCsv(string $path, array $rows): void
     {
-        return str_replace(' ', '', $normalizedName);
+        $fh = fopen($path, 'wb');
+        if (!$fh) return;
+
+        if (empty($rows)) {
+            fputcsv($fh, ['empty']);
+            fclose($fh);
+            return;
+        }
+
+        // union headers
+        $headers = [];
+        foreach ($rows as $r) {
+            foreach (array_keys($r) as $k) $headers[$k] = true;
+        }
+        $headers = array_keys($headers);
+
+        fputcsv($fh, $headers);
+
+        foreach ($rows as $r) {
+            $line = [];
+            foreach ($headers as $h) {
+                $line[] = $r[$h] ?? '';
+            }
+            fputcsv($fh, $line);
+        }
+
+        fclose($fh);
+    }
+
+    private function normName(string $s): string
+    {
+        $s = Str::of($s)->lower()->trim()->toString();
+
+        // remove common junk (#, numbering, punctuation)
+        $s = preg_replace('/[#\d\.\)\(]+/', ' ', $s);
+        $s = preg_replace('/[^a-z\s]/', ' ', $s);
+
+        // remove titles
+        $s = preg_replace('/\b(hon|mr|mrs|ms|dr|sir|madam|mp)\b/', ' ', $s);
+
+        $s = preg_replace('/\s+/', ' ', $s);
+        return trim($s);
     }
 
     private function normDistrict(string $s): string
     {
-        $s = trim(preg_replace('/\s+/', ' ', $s) ?? '');
-        return $s;
-    }
+        $s = Str::of($s)->lower()->trim()->toString();
 
-    private function normPhone(string $s): string
-    {
-        $s = trim($s);
-        if ($s === '') return '';
-        return preg_replace('/\s+/', '', $s) ?? '';
-    }
+        // remove the word "district" so "Kailahun" == "Kailahun District"
+        $s = preg_replace('/\bdistrict\b/', ' ', $s);
 
-    /** @return array<int,string> */
-    private function normalizeHeaderRow(array $row): array
-    {
-        $out = [];
-        foreach ($row as $cell) {
-            $k = mb_strtolower(trim((string) $cell));
-            $k = preg_replace('/[^a-z0-9_]+/', '_', $k) ?? $k;
-            $k = trim($k, '_');
+        // normalize punctuation
+        $s = preg_replace('/[^a-z\s]/', ' ', $s);
+        $s = preg_replace('/\s+/', ' ', $s);
 
-            $k = match ($k) {
-                'fullname' => 'full_name',
-                'full_name' => 'full_name',
-                'name' => 'full_name',
-                'district_name' => 'district',
-                'district' => 'district',
-                'phone' => 'phone_primary',
-                'phone1' => 'phone_primary',
-                'phone_primary' => 'phone_primary',
-                'phone2' => 'phone_secondary',
-                'phone_secondary' => 'phone_secondary',
-                default => $k,
-            };
-
-            $out[] = $k;
-        }
-        return $out;
-    }
-
-    /** @return array<string, mixed> */
-    private function rowToAssoc(array $header, array $row): array
-    {
-        $assoc = [];
-        foreach ($header as $i => $key) {
-            $assoc[$key] = $row[$i] ?? null;
-        }
-        return $assoc;
-    }
-
-    private function openWriter(string $path)
-    {
-        File::ensureDirectoryExists(dirname($path));
-        $fp = fopen($path, 'w');
-        if ($fp === false) {
-            throw new \RuntimeException("Cannot write file: {$path}");
-        }
-        return $fp;
-    }
-
-    private function upsertDelegateCandidateStatus(int $delegateId, int $candidateId, string $stance, int $confidence, CarbonImmutable $now): void
-    {
-        $stance = strtolower(trim($stance));
-        if (!in_array($stance, ['for', 'indicative', 'against'], true)) {
-            $stance = 'for';
-        }
-        $confidence = max(0, min(100, $confidence));
-
-        $table = 'delegate_candidate_statuses';
-
-        $exists = DB::table($table)
-            ->where('delegate_id', $delegateId)
-            ->where('candidate_id', $candidateId)
-            ->exists();
-
-        if ($exists) {
-            DB::table($table)
-                ->where('delegate_id', $delegateId)
-                ->where('candidate_id', $candidateId)
-                ->update([
-                    'stance' => $stance,
-                    'confidence' => $confidence,
-                    'updated_at' => $now,
-                ]);
-            return;
-        }
-
-        DB::table($table)->insert([
-            'delegate_id' => $delegateId,
-            'candidate_id' => $candidateId,
-            'stance' => $stance,
-            'confidence' => $confidence,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
+        return trim($s);
     }
 }
+
 
 /*
 # dry run
