@@ -24,7 +24,7 @@
               class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
         <option value="">All categories</option>
         @foreach($categories as $c)
-          <option value="{{ $c }}">{{ $c }}</option>
+          <option value="{{ $c->name }}">{{ $c->name }}</option>
         @endforeach
       </select>
 
@@ -118,9 +118,7 @@
                 </td>
               </tr>
             @empty
-              <tr>
-                <td colspan="5" class="px-3 py-8 text-center text-slate-500">No delegates found.</td>
-              </tr>
+              <tr><td colspan="5" class="px-3 py-8 text-center text-slate-500">No delegates found.</td></tr>
             @endforelse
           </tbody>
         </table>
@@ -134,10 +132,7 @@
     {{-- Form --}}
     <div class="bg-white border rounded-lg shadow-sm p-4 space-y-4">
       <div class="flex items-center justify-between">
-        <h2 class="text-sm font-semibold text-slate-700">
-          {{ $editingId ? 'Edit Delegate' : 'New Delegate' }}
-        </h2>
-
+        <h2 class="text-sm font-semibold text-slate-700">{{ $editingId ? 'Edit Delegate' : 'New Delegate' }}</h2>
         @if (session('status'))
           <span class="text-[11px] text-emerald-600">{{ session('status') }}</span>
         @endif
@@ -151,11 +146,16 @@
           @error('full_name') <p class="text-xs text-red-600 mt-1">{{ $message }}</p> @enderror
         </div>
 
+        {{-- CATEGORY SELECT FROM CATEGORY MODEL --}}
         <div>
           <label class="block text-xs font-medium text-slate-600">Category (optional)</label>
-          <input type="text" wire:model.live="category_form"
-                 class="mt-1 w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10"
-                 placeholder="e.g. Constituency Executive">
+          <select wire:model.live="category_form"
+                  class="mt-1 w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
+            <option value="">No category</option>
+            @foreach($categories as $c)
+              <option value="{{ $c->name }}">{{ $c->name }}</option>
+            @endforeach
+          </select>
           @error('category_form') <p class="text-xs text-red-600 mt-1">{{ $message }}</p> @enderror
         </div>
 
@@ -197,7 +197,7 @@
         </div>
 
         <p class="text-[11px] text-slate-500">
-          Delete = archive (sets <span class="font-mono">is_active=false</span>) to avoid breaking statuses/interactions.
+          Delete = archive (<span class="font-mono">is_active=false</span>) to avoid breaking statuses/interactions.
         </p>
       </div>
     </div>

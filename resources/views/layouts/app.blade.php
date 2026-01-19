@@ -72,7 +72,7 @@
           </svg>
           <span>Compare Candidates</span>
         </a>
-
+       <!--
         <a href="{{ route('board.approvals') }}"
            class="flex items-center gap-2 px-4 py-2 hover:bg-slate-50
                   {{ request()->routeIs('board.approvals') ? 'bg-slate-100 font-semibold border-l-4 border-slate-900' : 'border-l-4 border-transparent' }}">
@@ -94,6 +94,7 @@
           </svg>
           <span>Bulk Update</span>
         </a>
+        -->
 
         <div class="mt-6 mb-1 px-4 text-[11px] uppercase tracking-wide text-slate-500">
           Manage

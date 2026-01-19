@@ -2,11 +2,13 @@
 
 namespace App\Livewire\Manage;
 
+use App\Models\Category;
 use App\Models\Delegate;
 use App\Models\District;
 use App\Models\Group;
 use App\Models\Region;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Validation\Rule;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\WithPagination;
@@ -18,6 +20,7 @@ class Delegates extends Component
     #[Url(as: 'q')]
     public string $q = '';
 
+    // stores category NAME (string)
     #[Url(as: 'category')]
     public string $category = '';
 
@@ -33,7 +36,7 @@ class Delegates extends Component
     // Form
     public ?int $editingId = null;
     public string $full_name = '';
-    public ?string $category_form = null;
+    public ?string $category_form = null; // category NAME
     public ?int $district_id = null;
     public array $group_ids = [];
 
@@ -55,18 +58,28 @@ class Delegates extends Component
     {
         $d = Delegate::query()->with('groups')->findOrFail($id);
 
-        $this->editingId = $d->id;
+        $this->editingId = (int) $d->id;
         $this->full_name = (string) $d->full_name;
-        $this->category_form = $d->category;
-        $this->district_id = $d->district_id;
+        $this->category_form = $d->category; // string
+        $this->district_id = $d->district_id ? (int) $d->district_id : null;
         $this->group_ids = $d->groups->pluck('id')->map(fn ($v) => (int) $v)->all();
+
+        $this->confirmDeleteId = null;
     }
 
     public function save(): void
     {
         $data = $this->validate([
             'full_name' => ['required', 'string', 'min:3', 'max:255'],
-            'category_form' => ['nullable', 'string', 'max:255'],
+
+            // IMPORTANT: category must be a valid Category.name (or null)
+            'category_form' => [
+                'nullable',
+                'string',
+                'max:255',
+                Rule::exists('categories', 'name'),
+            ],
+
             'district_id' => ['nullable', 'integer', 'exists:districts,id'],
             'group_ids' => ['array'],
             'group_ids.*' => ['integer', 'exists:groups,id'],
@@ -74,7 +87,7 @@ class Delegates extends Component
 
         $payload = [
             'full_name' => $data['full_name'],
-            'category' => $data['category_form'] ?: null,
+            'category' => $data['category_form'] ?: null, // save category NAME
             'district_id' => $data['district_id'] ?: null,
             'is_active' => true,
         ];
@@ -107,24 +120,19 @@ class Delegates extends Component
 
     /**
      * SAFE delete = archive (is_active=false).
-     * Keeps history/statuses intact.
      */
     public function deleteDelegate(): void
     {
         if (!$this->confirmDeleteId) return;
 
-        $id = $this->confirmDeleteId;
+        $id = (int) $this->confirmDeleteId;
 
         $d = Delegate::query()->findOrFail($id);
 
-        // Optional: detach groups to keep pivots clean
         $d->groups()->detach();
-
-        // Archive
         $d->is_active = false;
         $d->save();
 
-        // If currently editing, reset form
         if ($this->editingId === $id) {
             $this->resetForm();
         }
@@ -151,10 +159,9 @@ class Delegates extends Component
     {
         return Delegate::query()
             ->with(['district.region', 'groups'])
-            ->when($this->q !== '', function (Builder $q) {
-                $q->where('full_name', 'ilike', '%' . $this->q . '%');
-            })
-            ->when($this->category !== '', fn (Builder $q) => $q->where('category', $this->category))
+            ->where('is_active', true)
+            ->when($this->q !== '', fn (Builder $q) => $q->where('full_name', 'ilike', '%' . $this->q . '%'))
+            ->when($this->category !== '', fn (Builder $q) => $q->where('category', $this->category)) // category NAME
             ->when($this->regionId, fn (Builder $q) => $q->whereHas('district', fn (Builder $d) => $d->where('region_id', $this->regionId)))
             ->when($this->districtId, fn (Builder $q) => $q->where('district_id', $this->districtId))
             ->when($this->groupId, fn (Builder $q) => $q->whereHas('groups', fn (Builder $g) => $g->where('groups.id', $this->groupId)))
@@ -172,12 +179,12 @@ class Delegates extends Component
 
         $groups = Group::query()->orderBy('name')->get(['id', 'name']);
 
-        $categories = Delegate::query()
-            ->whereNotNull('category')
-            ->distinct()
-            ->orderBy('category')
-            ->pluck('category')
-            ->all();
+        // Categories from Category model (name is both label & value)
+        $categories = Category::query()
+            ->where('is_active', true)
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get(['id', 'name']);
 
         $delegates = $this->baseQuery()->paginate(25);
 
