@@ -219,6 +219,7 @@ class DelegateBoard extends Component
     {
         $query = Delegate::query()
             ->with(['district.region', 'groups', 'guarantor'])
+             ->where('is_active', true)
             ->when($this->q !== '', fn (Builder $q) => $q->where('full_name', 'like', "%{$this->q}%"))
             ->when($this->category, fn (Builder $q) => $q->where('category', $this->category))
             ->when($this->districtId, fn (Builder $q) => $q->where('district_id', $this->districtId))

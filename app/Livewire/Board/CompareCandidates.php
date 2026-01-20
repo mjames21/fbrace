@@ -87,6 +87,7 @@ class CompareCandidates extends Component
     {
         $q = Delegate::query()
             ->with(['district.region', 'groups'])
+             ->where('is_active', true)
             ->when($this->q !== '', fn (Builder $b) => $b->where('full_name', 'ilike', "%{$this->q}%"))
             ->when($this->category, fn (Builder $b) => $b->where('category', $this->category))
             ->when($this->districtId, fn (Builder $b) => $b->where('district_id', $this->districtId))
