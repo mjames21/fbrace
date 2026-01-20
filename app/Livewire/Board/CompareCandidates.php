@@ -45,6 +45,14 @@ class CompareCandidates extends Component
     #[Url(as: 'dir')]
     public string $dir = 'asc'; // asc|desc
 
+    // Principal stance filter
+    #[Url(as: 'pstance')]
+    public ?string $principalStance = null;
+
+    // Compare against ONE candidate
+    #[Url(as: 'compare')]
+    public ?int $compareCandidateId = null;
+
     public function updatingQ(): void { $this->resetPage(); }
     public function updatingRegionId(): void { $this->districtId = null; $this->resetPage(); }
     public function updatingDistrictId(): void { $this->resetPage(); }
@@ -52,18 +60,36 @@ class CompareCandidates extends Component
     public function updatingCategory(): void { $this->resetPage(); }
     public function updatingAz(): void { $this->resetPage(); }
     public function updatingPerPage(): void { $this->resetPage(); }
+    public function updatingPrincipalStance(): void { $this->resetPage(); }
+    public function updatingCompareCandidateId(): void { $this->resetPage(); }
 
     public function mount(): void
     {
         $this->sort = in_array($this->sort, ['name', 'region', 'district', 'category', 'group'], true) ? $this->sort : 'name';
         $this->dir = $this->dir === 'desc' ? 'desc' : 'asc';
+
+        if (!$this->compareCandidateId) {
+            $this->compareCandidateId = Candidate::query()
+                ->where('is_active', true)
+                ->where('is_principal', false)
+                ->orderBy('sort_order')
+                ->orderBy('name')
+                ->value('id');
+        }
+    }
+
+    private function principalCandidateId(): ?int
+    {
+        return Candidate::query()
+            ->where('is_principal', true)
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->value('id');
     }
 
     public function sortBy(string $field): void
     {
-        if (!in_array($field, ['name', 'region', 'district', 'category', 'group'], true)) {
-            return;
-        }
+        if (!in_array($field, ['name', 'region', 'district', 'category', 'group'], true)) return;
 
         if ($this->sort === $field) {
             $this->dir = $this->dir === 'asc' ? 'desc' : 'asc';
@@ -83,16 +109,49 @@ class CompareCandidates extends Component
         $this->resetPage();
     }
 
+    private function applyPrincipalStanceFilter(Builder $query): void
+    {
+        $pid = $this->principalCandidateId();
+        if (!$pid) return;
+
+        $stance = strtolower((string) ($this->principalStance ?? ''));
+        if ($stance === '') return;
+
+        $statusTable = (new DelegateCandidateStatus())->getTable();
+
+        if ($stance === 'none') {
+            $query->whereNotExists(function ($sq) use ($statusTable, $pid) {
+                $sq->selectRaw('1')
+                    ->from($statusTable)
+                    ->whereColumn($statusTable . '.delegate_id', 'delegates.id')
+                    ->where($statusTable . '.candidate_id', $pid);
+            });
+            return;
+        }
+
+        if (!in_array($stance, ['for', 'indicative', 'against'], true)) return;
+
+        $query->whereExists(function ($sq) use ($statusTable, $pid, $stance) {
+            $sq->selectRaw('1')
+                ->from($statusTable)
+                ->whereColumn($statusTable . '.delegate_id', 'delegates.id')
+                ->where($statusTable . '.candidate_id', $pid)
+                ->where($statusTable . '.stance', $stance);
+        });
+    }
+
     private function delegatesQuery(): Builder
     {
         $q = Delegate::query()
             ->with(['district.region', 'groups'])
-             ->where('is_active', true)
+            ->where('is_active', true) // ✅ hide archived/deleted
             ->when($this->q !== '', fn (Builder $b) => $b->where('full_name', 'ilike', "%{$this->q}%"))
             ->when($this->category, fn (Builder $b) => $b->where('category', $this->category))
             ->when($this->districtId, fn (Builder $b) => $b->where('district_id', $this->districtId))
             ->when($this->regionId, fn (Builder $b) => $b->whereHas('district', fn (Builder $d) => $d->where('region_id', $this->regionId)))
             ->when($this->groupId, fn (Builder $b) => $b->whereHas('groups', fn (Builder $g) => $g->where('groups.id', $this->groupId)));
+
+        $this->applyPrincipalStanceFilter($q);
 
         $az = strtoupper((string)($this->az ?? ''));
         if ($this->q === '' && $az !== '') {
@@ -134,34 +193,36 @@ class CompareCandidates extends Component
     }
 
     /**
-     * @param  Collection<int,int>  $delegateIds
-     * @param  Collection<int,int>  $candidateIds
-     * @return array<int,array<int,DelegateCandidateStatus>>
+     * @param  Collection<int,int> $delegateIds
+     * @param  int|null $candidateId
+     * @return array<int,DelegateCandidateStatus>
      */
-    private function statusesMatrix(Collection $delegateIds, Collection $candidateIds): array
+    private function statusMapFor(Collection $delegateIds, ?int $candidateId): array
     {
-        if ($delegateIds->isEmpty() || $candidateIds->isEmpty()) return [];
+        if (!$candidateId || $delegateIds->isEmpty()) return [];
 
         $rows = DelegateCandidateStatus::query()
+            ->where('candidate_id', $candidateId)
             ->whereIn('delegate_id', $delegateIds->all())
-            ->whereIn('candidate_id', $candidateIds->all())
-            ->get(['delegate_id', 'candidate_id', 'stance', 'confidence', 'updated_at']);
+            ->get(['delegate_id', 'stance', 'confidence', 'updated_at']);
 
-        $matrix = [];
+        $map = [];
         foreach ($rows as $r) {
-            $matrix[(int)$r->delegate_id][(int)$r->candidate_id] = $r;
+            $map[(int)$r->delegate_id] = $r;
         }
-        return $matrix;
+        return $map;
     }
 
     public function render()
     {
+        $principalId = $this->principalCandidateId();
+
         $candidates = Candidate::query()
-            ->orderByDesc('is_active')
+            ->where('is_active', true)
             ->orderByDesc('is_principal')
             ->orderBy('sort_order')
             ->orderBy('name')
-            ->get(['id', 'name', 'is_active', 'is_principal']);
+            ->get(['id', 'name', 'is_principal']);
 
         $regions = Region::orderBy('name')->get(['id', 'name']);
         $groups = Group::orderBy('name')->get(['id', 'name']);
@@ -179,22 +240,29 @@ class CompareCandidates extends Component
             ->pluck('category')
             ->all();
 
-        $per = $this->perPage === 0 ? 100000 : $this->perPage;
+        $per = $this->perPage === 0 ? 100000 : max(1, $this->perPage);
+
         $delegates = $this->delegatesQuery()->paginate($per);
 
         $delegateIds = $delegates->getCollection()->pluck('id');
-        $candidateIds = $candidates->pluck('id');
 
-        $matrix = $this->statusesMatrix($delegateIds, $candidateIds);
+        $principalMap = $this->statusMapFor($delegateIds, $principalId);
+        $compareMap = $this->statusMapFor($delegateIds, $this->compareCandidateId);
+
+        $compareCandidate = $this->compareCandidateId
+            ? $candidates->firstWhere('id', $this->compareCandidateId)
+            : null;
 
         return view('livewire.board.compare-candidates', [
             'candidates' => $candidates,
+            'compareCandidate' => $compareCandidate,
             'regions' => $regions,
             'districts' => $districts,
             'groups' => $groups,
             'categories' => $categories,
             'delegates' => $delegates,
-            'matrix' => $matrix,
+            'principalMap' => $principalMap,
+            'compareMap' => $compareMap,
             'sort' => $this->sort,
             'dir' => $this->dir,
         ])->layout('layouts.app');

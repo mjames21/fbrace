@@ -2,7 +2,6 @@
 
 namespace App\Livewire\Board;
 
-use App\Models\Alliance;
 use App\Models\Candidate;
 use App\Models\Delegate;
 use App\Models\DelegateCandidateStatus;
@@ -30,7 +29,7 @@ class DelegateBoard extends Component
     #[Url(as: 'candidate')]
     public ?int $candidateId = null;
 
-    // Principal toggle (locks to principal candidate)
+    // Locks board to principal candidate
     #[Url(as: 'principal')]
     public bool $principalOnly = true;
 
@@ -46,13 +45,16 @@ class DelegateBoard extends Component
     #[Url(as: 'category')]
     public ?string $category = null;
 
-    // Optional guarantor filter (if you added it)
     #[Url(as: 'guarantor')]
     public ?int $guarantorId = null;
 
-    // A–Z filter (applies only if q is empty)
+    // A–Z filter (applies only if q empty)
     #[Url(as: 'az')]
     public ?string $az = null;
+
+    // Filter delegates by PRINCIPAL stance (for/indicative/against/none)
+    #[Url(as: 'pstance')]
+    public ?string $principalStance = null;
 
     #[Url(as: 'per')]
     public int $perPage = 25;
@@ -79,13 +81,13 @@ class DelegateBoard extends Component
     public function updatingGuarantorId(): void { $this->clearSelection(); $this->resetPage(); }
     public function updatingAz(): void { $this->clearSelection(); $this->resetPage(); }
     public function updatingPrincipalOnly(): void { $this->clearSelection(); $this->resetPage(); }
+    public function updatingPrincipalStance(): void { $this->clearSelection(); $this->resetPage(); }
+    public function updatingPerPage(): void { $this->clearSelection(); $this->resetPage(); }
 
     public function mount(): void
     {
         $this->applyPrincipalLock();
-
-        // Default perPage sanity
-        if ($this->perPage < 1) $this->perPage = 25;
+        if ($this->perPage < 0) $this->perPage = 25;
     }
 
     public function updatedPrincipalOnly(): void
@@ -94,22 +96,25 @@ class DelegateBoard extends Component
         $this->resetPage();
     }
 
+    private function principalCandidateId(): ?int
+    {
+        return Candidate::query()
+            ->where('is_principal', true)
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->value('id');
+    }
+
     private function applyPrincipalLock(): void
     {
         if ($this->principalOnly) {
-            $principalId = Candidate::query()
-                ->where('is_principal', true)
-                ->orderBy('sort_order')
-                ->orderBy('name')
-                ->value('id');
-
-            if ($principalId) {
-                $this->candidateId = (int) $principalId;
+            $pid = $this->principalCandidateId();
+            if ($pid) {
+                $this->candidateId = (int) $pid;
                 return;
             }
         }
 
-        // If not principal-only, ensure we have some candidate selected
         if (!$this->candidateId) {
             $this->candidateId = Candidate::query()
                 ->where('is_active', true)
@@ -148,9 +153,8 @@ class DelegateBoard extends Component
     }
 
     /**
-     * IMPORTANT FIX:
-     * - Stance change should NOT overwrite confidence.
-     * - If row doesn't exist yet, create with default confidence (50).
+     * Stance change MUST NOT overwrite confidence.
+     * If row doesn't exist: create with default confidence 50.
      */
     public function setStance(int $delegateId, string $stance): void
     {
@@ -165,13 +169,14 @@ class DelegateBoard extends Component
         ]);
 
         if (!$row->exists) {
-            $row->confidence = 50; // default
+            $row->confidence = 50;
         }
 
         $row->stance = $stance;
         $row->save();
 
         $this->dispatch('notify', message: 'Status updated.');
+        $this->dispatch('refresh-board');
     }
 
     public function updateConfidence(int $delegateId, mixed $value): void
@@ -189,6 +194,7 @@ class DelegateBoard extends Component
         $row->save();
 
         $this->dispatch('notify', message: 'Confidence updated.');
+        $this->dispatch('refresh-board');
     }
 
     public function applyBulk(): void
@@ -212,29 +218,61 @@ class DelegateBoard extends Component
         }
 
         $this->dispatch('notify', message: 'Bulk update applied.');
+        $this->dispatch('refresh-board');
         $this->clearSelection();
+    }
+
+    private function applyPrincipalStanceFilter(Builder $query): void
+    {
+        $pid = $this->principalCandidateId();
+        if (!$pid) return;
+
+        $stance = strtolower((string) ($this->principalStance ?? ''));
+        if ($stance === '') return;
+
+        $statusTable = (new DelegateCandidateStatus())->getTable();
+
+        if ($stance === 'none') {
+            $query->whereNotExists(function ($sq) use ($statusTable, $pid) {
+                $sq->selectRaw('1')
+                    ->from($statusTable)
+                    ->whereColumn($statusTable . '.delegate_id', 'delegates.id')
+                    ->where($statusTable . '.candidate_id', $pid);
+            });
+            return;
+        }
+
+        if (!in_array($stance, ['for', 'indicative', 'against'], true)) return;
+
+        $query->whereExists(function ($sq) use ($statusTable, $pid, $stance) {
+            $sq->selectRaw('1')
+                ->from($statusTable)
+                ->whereColumn($statusTable . '.delegate_id', 'delegates.id')
+                ->where($statusTable . '.candidate_id', $pid)
+                ->where($statusTable . '.stance', $stance);
+        });
     }
 
     private function delegateQuery(): Builder
     {
         $query = Delegate::query()
             ->with(['district.region', 'groups', 'guarantor'])
-             ->where('is_active', true)
-            ->when($this->q !== '', fn (Builder $q) => $q->where('full_name', 'like', "%{$this->q}%"))
+            ->where('is_active', true) // ✅ hide archived/deleted
+            ->when($this->q !== '', fn (Builder $q) => $q->where('full_name', 'ilike', "%{$this->q}%"))
             ->when($this->category, fn (Builder $q) => $q->where('category', $this->category))
             ->when($this->districtId, fn (Builder $q) => $q->where('district_id', $this->districtId))
             ->when($this->regionId, fn (Builder $q) => $q->whereHas('district', fn (Builder $d) => $d->where('region_id', $this->regionId)))
             ->when($this->groupId, fn (Builder $q) => $q->whereHas('groups', fn (Builder $g) => $g->where('groups.id', $this->groupId)))
             ->when($this->guarantorId, fn (Builder $q) => $q->where('guarantor_id', $this->guarantorId));
 
-        // A–Z filter only when search is empty
+        $this->applyPrincipalStanceFilter($query);
+
         $az = strtoupper((string) ($this->az ?? ''));
         if ($this->q === '' && $az !== '') {
-            // Postgres-friendly (ilike) if you're on pgsql
-            $query->where('full_name', 'ilike', $az.'%');
+            $query->where('full_name', 'ilike', $az . '%');
         }
 
-        return $query->orderBy('full_name');
+        return $query->orderByRaw('lower(full_name) asc');
     }
 
     /**
@@ -290,15 +328,14 @@ class DelegateBoard extends Component
             ->orderBy('name')
             ->get(['id', 'name']);
 
-        // ALL = 100000
-        $per = $this->perPage >= 100000 ? 100000 : $this->perPage;
+        $per = $this->perPage === 0 ? 100000 : max(1, $this->perPage);
 
         $delegates = $this->delegateQuery()->paginate($per);
 
         $this->currentPageIds = $delegates->getCollection()->pluck('id')->map(fn ($v) => (int) $v)->all();
 
-        $delegateIdCollection = $delegates->getCollection()->pluck('id');
-        $statusMap = $this->statusesForPage($delegateIdCollection);
+        $delegateIds = $delegates->getCollection()->pluck('id');
+        $statusMap = $this->statusesForPage($delegateIds);
 
         return view('livewire.board.delegate-board', [
             'candidates' => $candidates,

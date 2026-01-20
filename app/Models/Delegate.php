@@ -71,4 +71,8 @@ class Delegate extends Model
     {
         return $this->belongsTo(Category::class, 'category_id');
     }
+    public function candidateStatuses(): HasMany
+{
+    return $this->hasMany(\App\Models\DelegateCandidateStatus::class);
+}
 }

@@ -1,4 +1,3 @@
-{{-- resources/views/livewire/board/delegate-board.blade.php --}}
 <div class="p-6 space-y-6">
   @section('title', 'Delegate Board — '.config('app.name'))
 
@@ -14,7 +13,7 @@
     <div class="flex items-center gap-2">
       <a href="{{ route('board.compare-candidates') }}"
          class="inline-flex items-center px-4 py-2 text-sm font-semibold rounded-md bg-gray-100 hover:bg-gray-200">
-        Compare Candidates
+        Compare (Principal vs One)
       </a>
 
       <a href="{{ route('horse-race') }}"
@@ -31,25 +30,22 @@
 
   {{-- Filters --}}
   <div class="bg-white border rounded-lg shadow-sm p-4 space-y-3">
-    <div class="grid md:grid-cols-7 gap-2">
+    <div class="grid md:grid-cols-8 gap-2">
       <input wire:model.live.debounce.300ms="q"
              placeholder="Search delegate..."
              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10" />
 
-      {{-- Principal vs Other --}}
+      {{-- Principal lock --}}
       <div class="border rounded-md px-3 py-2 text-sm flex items-center justify-between gap-3">
         <label class="inline-flex items-center gap-2 cursor-pointer select-none">
           <input type="checkbox" class="rounded border-gray-300"
                  wire:model.live="principalOnly">
           <span class="font-semibold text-slate-700">Principal</span>
         </label>
-
-        <span class="text-xs text-slate-500">
-          {{ $principalOnly ? 'Locked' : 'Choose' }}
-        </span>
+        <span class="text-xs text-slate-500">{{ $principalOnly ? 'Locked' : 'Choose' }}</span>
       </div>
 
-      {{-- Candidate (disabled when principalOnly) --}}
+      {{-- Candidate --}}
       <select wire:model.live="candidateId"
               @disabled($principalOnly)
               class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10 disabled:bg-slate-50 disabled:text-slate-500">
@@ -61,6 +57,16 @@
           @endphp
           <option value="{{ $c->id }}">{{ $label }}</option>
         @endforeach
+      </select>
+
+      {{-- Principal stance filter --}}
+      <select wire:model.live="principalStance"
+              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
+        <option value="">Principal: All</option>
+        <option value="for">Principal: For (🟢)</option>
+        <option value="indicative">Principal: Indicative (🟡)</option>
+        <option value="against">Principal: Against (🔴)</option>
+        <option value="none">Principal: Not assessed (⭕)</option>
       </select>
 
       <select wire:model.live="category"
@@ -95,7 +101,6 @@
         @endforeach
       </select>
 
-      {{-- Optional guarantor filter --}}
       @isset($guarantors)
         <select wire:model.live="guarantorId"
                 class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
@@ -148,10 +153,8 @@
     <div class="flex flex-wrap gap-1">
       @foreach($letters as $L)
         @php $active = strtoupper($current) === $L; @endphp
-
-        <button
-          wire:click="$set('az', '{{ $L === 'ALL' ? '' : $L }}')"
-          class="px-2 py-1 text-xs rounded border {{ $active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white hover:bg-slate-50 border-slate-200' }}">
+        <button wire:click="$set('az','{{ $L === 'ALL' ? '' : $L }}')"
+                class="px-2 py-1 text-xs rounded border {{ $active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white hover:bg-slate-50 border-slate-200' }}">
           {{ $L }}
         </button>
       @endforeach
@@ -217,7 +220,6 @@
           @forelse($delegates as $d)
             @php
               $s = $statusMap[$d->id] ?? null;
-
               $stance = $s?->stance ?? 'indicative';
               $conf = (int) ($s?->confidence ?? 50);
               $pending = (bool) ($s?->pending_stance);
@@ -287,21 +289,14 @@
 
               <td class="px-3 py-2 text-right">
                 <div class="inline-flex items-center gap-1">
-                  {{-- IMPORTANT: pass CURRENT confidence so clicking stance does NOT force 70/50 --}}
-                  <button wire:click="setStance({{ $d->id }}, 'for', {{ $conf }})"
-                          class="px-2 py-1 text-xs font-semibold rounded bg-emerald-50 border border-emerald-200 text-emerald-800 hover:bg-emerald-100">
-                    🟢
-                  </button>
+                  <button wire:click="setStance({{ $d->id }}, 'for')"
+                          class="px-2 py-1 text-xs font-semibold rounded bg-emerald-50 border border-emerald-200 text-emerald-800 hover:bg-emerald-100">🟢</button>
 
-                  <button wire:click="setStance({{ $d->id }}, 'indicative', {{ $conf }})"
-                          class="px-2 py-1 text-xs font-semibold rounded bg-amber-50 border border-amber-200 text-amber-900 hover:bg-amber-100">
-                    🟡
-                  </button>
+                  <button wire:click="setStance({{ $d->id }}, 'indicative')"
+                          class="px-2 py-1 text-xs font-semibold rounded bg-amber-50 border border-amber-200 text-amber-900 hover:bg-amber-100">🟡</button>
 
-                  <button wire:click="setStance({{ $d->id }}, 'against', {{ $conf }})"
-                          class="px-2 py-1 text-xs font-semibold rounded bg-red-50 border border-red-200 text-red-800 hover:bg-red-100">
-                    🔴
-                  </button>
+                  <button wire:click="setStance({{ $d->id }}, 'against')"
+                          class="px-2 py-1 text-xs font-semibold rounded bg-red-50 border border-red-200 text-red-800 hover:bg-red-100">🔴</button>
 
                   <div class="ml-2 inline-flex items-center gap-2">
                     <span class="text-[11px] text-slate-500">Conf</span>
@@ -319,19 +314,14 @@
               </td>
             </tr>
           @empty
-            <tr>
-              <td colspan="9" class="px-3 py-8 text-center text-slate-500">No delegates found.</td>
-            </tr>
+            <tr><td colspan="9" class="px-3 py-8 text-center text-slate-500">No delegates found.</td></tr>
           @endforelse
         </tbody>
       </table>
     </div>
 
     <div class="px-4 py-3 border-t">
-      {{-- When perPage=0 (All), your component should return a paginator-like object or skip links.
-           If you handle All with ->paginate(PHP_INT_MAX), links will still render but can be huge.
-           Best: if All, use ->get() and hide links in the component. --}}
-      @if(method_exists($delegates, 'links'))
+      @if($perPage !== 0)
         {{ $delegates->links() }}
       @endif
     </div>
