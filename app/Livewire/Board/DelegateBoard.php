@@ -257,7 +257,7 @@ class DelegateBoard extends Component
     {
         $query = Delegate::query()
             ->with(['district.region', 'groups', 'guarantor'])
-            ->where('is_active', true) // ✅ hide archived/deleted
+            //->where('is_active', true) // ✅ hide archived/deleted
             ->when($this->q !== '', fn (Builder $q) => $q->where('full_name', 'ilike', "%{$this->q}%"))
             ->when($this->category, fn (Builder $q) => $q->where('category', $this->category))
             ->when($this->districtId, fn (Builder $q) => $q->where('district_id', $this->districtId))
