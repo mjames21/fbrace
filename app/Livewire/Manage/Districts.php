@@ -38,6 +38,7 @@ class Districts extends Component
         $this->editingId = (int) $d->id;
         $this->name = (string) $d->name;
         $this->code = $d->code;
+        $this->code = $d->code;
         $this->region_id = $d->region_id;
 
         $this->resetErrorBag();
@@ -57,6 +58,7 @@ class Districts extends Component
             [
                 'name' => $data['name'],
                 'code' => $data['code'] ? strtoupper(trim($data['code'])) : null,
+                'slug' =>  $data['code'] ? strtoupper(trim($data['code'])) : null,
                 'region_id' => $data['region_id'],
             ]
         );

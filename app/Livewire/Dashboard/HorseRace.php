@@ -123,7 +123,9 @@ private function stanceCountsByCandidate(array $candidateIds): array
 
     $pivot = 'delegate_group'; // change if your pivot name differs
     $table = (new \App\Models\DelegateCandidateStatus())->getTable(); // e.g. delegate_candidate_status
+    // Reuse your existing "in-scope delegates" logic (includes delegates.is_active = true + filters)
 
+    $delegateIdsInScope = $this->delegatesScopeQuery()->select('delegates.id');
     $q = \App\Models\DelegateCandidateStatus::query()
         ->selectRaw("
             {$table}.candidate_id as candidate_id,
@@ -134,6 +136,7 @@ private function stanceCountsByCandidate(array $candidateIds): array
         ->join('delegates', 'delegates.id', '=', "{$table}.delegate_id")
         ->leftJoin('districts', 'districts.id', '=', 'delegates.district_id')
         ->whereIn("{$table}.candidate_id", $candidateIds)
+        ->whereIn("{$table}.delegate_id", $delegateIdsInScope)
         ->when($this->category, fn ($x) => $x->where('delegates.category', $this->category))
         ->when($this->districtId, fn ($x) => $x->where('delegates.district_id', $this->districtId))
         ->when($this->regionId, fn ($x) => $x->where('districts.region_id', $this->regionId))

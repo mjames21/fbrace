@@ -19,9 +19,18 @@
       <input wire:model.live.debounce.300ms="q"
              placeholder="Search delegate..."
              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10" />
-      <select wire:model.live="regionId"
+
+      <select wire:model.live="category"
               class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
         <option value="">All categories</option>
+        @foreach($categories as $c)
+          <option value="{{ $c->name }}">{{ $c->name }}</option>
+        @endforeach
+      </select>
+
+      <select wire:model.live="regionId"
+              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
+        <option value="">All regions</option>
         @foreach($regions as $r)
           <option value="{{ $r->id }}">{{ $r->name }}</option>
         @endforeach
@@ -29,9 +38,17 @@
 
       <select wire:model.live="districtId"
               class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
-        <option value="">All subcategories</option>
+        <option value="">All districts</option>
         @foreach($districts as $d)
           <option value="{{ $d->id }}">{{ $d->name }}</option>
+        @endforeach
+      </select>
+
+      <select wire:model.live="groupId"
+              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
+        <option value="">All groups</option>
+        @foreach($groups as $g)
+          <option value="{{ $g->id }}">{{ $g->name }}</option>
         @endforeach
       </select>
     </div>

@@ -26,7 +26,7 @@ class Regions extends Component
         $this->editingId = (int) $r->id;
         $this->name = (string) $r->name;
         $this->code = $r->code;
-
+        $this->slug= $r->code;
         $this->resetErrorBag();
         $this->resetValidation();
     }
@@ -43,6 +43,7 @@ class Regions extends Component
             [
                 'name' => $data['name'],
                 'code' => $data['code'] ? strtoupper(trim($data['code'])) : null,
+                'slug'=> $data['code'] ? strtoupper(trim($data['code'])) : null,
             ]
         );
 
@@ -54,7 +55,7 @@ class Regions extends Component
     {
         $regions = Region::query()
             ->orderBy('name')
-            ->get(['id', 'name', 'code']);
+            ->get(['id', 'name', 'code','slug']);
 
         return view('livewire.manage.regions', [
             'regions' => $regions,

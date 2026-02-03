@@ -25,22 +25,15 @@
   {{-- Filters --}}
   <div class="bg-white border rounded-lg shadow-sm p-4 space-y-3">
     <div class="grid md:grid-cols-4 gap-2">
-      <select wire:model.live="category" class="border rounded-md px-3 py-2 text-sm">
-        <option value="">All categories</option>
-        @foreach($categories as $c)
-          <option value="{{ $c }}">{{ $c }}</option>
-        @endforeach
-      </select>
-
       <select wire:model.live="regionId" class="border rounded-md px-3 py-2 text-sm">
-        <option value="">All regions</option>
+        <option value="">All categories</option>
         @foreach($regions as $r)
           <option value="{{ $r->id }}">{{ $r->name }}</option>
         @endforeach
       </select>
 
       <select wire:model.live="districtId" class="border rounded-md px-3 py-2 text-sm">
-        <option value="">All districts</option>
+        <option value="">All subcategories</option>
         @foreach($districts as $d)
           <option value="{{ $d->id }}">{{ $d->name }}</option>
         @endforeach
