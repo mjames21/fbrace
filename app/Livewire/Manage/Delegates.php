@@ -159,7 +159,7 @@ class Delegates extends Component
     {
         return Delegate::query()
             ->with(['district.region', 'groups'])
-           // ->where('is_active', true)
+            ->where('is_active', true)
             ->when($this->q !== '', fn (Builder $q) => $q->where('full_name', 'ilike', '%' . $this->q . '%'))
             ->when($this->category !== '', fn (Builder $q) => $q->where('category', $this->category)) // category NAME
             ->when($this->regionId, fn (Builder $q) => $q->whereHas('district', fn (Builder $d) => $d->where('region_id', $this->regionId)))

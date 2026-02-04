@@ -88,7 +88,7 @@ class HorseRace extends Component
     {
         return Delegate::query()
             ->when($this->category, fn (Builder $q) => $q->where('category', $this->category))
-             //->where('is_active', true)
+            ->where('is_active', true)
             ->when($this->districtId, fn (Builder $q) => $q->where('district_id', $this->districtId))
             ->when(
                 $this->regionId,
