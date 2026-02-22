@@ -31,6 +31,7 @@ class DelegateBoard extends Component
     #[Url(as: 'candidate')]
     public ?int $candidateId = null;
 
+    // Locks board to principal candidate
     #[Url(as: 'principal')]
     public bool $principalOnly = true;
 
@@ -49,9 +50,11 @@ class DelegateBoard extends Component
     #[Url(as: 'guarantor')]
     public ?int $guarantorId = null;
 
+    // A–Z filter (applies only if q empty)
     #[Url(as: 'az')]
     public ?string $az = null;
 
+    // Filter delegates by PRINCIPAL stance (for/indicative/against/none)
     #[Url(as: 'pstance')]
     public ?string $principalStance = null;
 
@@ -207,7 +210,6 @@ class DelegateBoard extends Component
     public function applyBulk(): void
     {
         if (!$this->candidateId) return;
-
         if (empty($this->selected)) {
             $this->dispatch('notify', message: 'No delegates selected.');
             return;
@@ -274,16 +276,28 @@ class DelegateBoard extends Component
         $query = Delegate::query()
             ->where('is_active', true)
             ->when($search !== '', fn (Builder $q) => $q->where('full_name', 'ilike', "%{$search}%"))
-            ->when($category, fn (Builder $q) => $q->where('category', $category))
+            ->when($category !== null, function (Builder $q) use ($category) {
+                if ($category === '__none__') {
+                    $q->whereNull('category');
+                    return;
+                }
+                $q->where('category', $category);
+            })
             ->when($districtId, fn (Builder $q) => $q->where('district_id', $districtId))
             ->when($regionId, fn (Builder $q) => $q->whereHas('district', fn (Builder $d) => $d->where('region_id', $regionId)))
-            ->when($groupId, fn (Builder $q) => $q->whereHas('groups', fn (Builder $g) => $g->where('groups.id', $groupId)))
+            ->when($groupId !== null, function (Builder $q) use ($groupId) {
+                if ((int) $groupId === 0) {
+                    $q->whereDoesntHave('groups');
+                    return;
+                }
+                $q->whereHas('groups', fn (Builder $g) => $g->where('groups.id', (int) $groupId));
+            })
             ->when($guarantorId !== null, function (Builder $q) use ($guarantorId) {
-                if ($guarantorId === 0) {
+                if ((int) $guarantorId === 0) {
                     $q->whereNull('guarantor_id');
                     return;
                 }
-                $q->where('guarantor_id', $guarantorId);
+                $q->where('guarantor_id', (int) $guarantorId);
             });
 
         $this->applyPrincipalStanceFilterTo($query, $principalStance);
@@ -329,13 +343,10 @@ class DelegateBoard extends Component
         foreach ($rows as $r) {
             $map[(int) $r->delegate_id] = $r;
         }
-
         return $map;
     }
 
     /**
-     * Counts stances for a candidate across the delegates returned by $delegateIdsQuery.
-     *
      * @return array{for:int,indicative:int,against:int,none:int,all:int}
      */
     private function stanceCountsForCandidateOnDelegates(int $candidateId, Builder $delegateIdsQuery): array
@@ -406,7 +417,6 @@ class DelegateBoard extends Component
             ->get(['id', 'name']);
 
         $per = $this->perPage === 0 ? 100000 : max(1, $this->perPage);
-
         $delegates = $this->delegateQuery()->paginate($per);
 
         $this->currentPageIds = $delegates->getCollection()->pluck('id')->map(fn ($v) => (int) $v)->all();
@@ -510,6 +520,58 @@ class DelegateBoard extends Component
             ->all();
         $noGuarantorCount = (int) (clone $guarantorFacetQuery)->whereNull('guarantor_id')->count('delegates.id');
 
+        // Category facet (ignore category)
+        $categoryFacetQuery = $this->delegateBaseQuery(
+            $this->q,
+            null,
+            $this->regionId,
+            $this->districtId,
+            $this->groupId,
+            $this->guarantorId,
+            $this->az,
+            $this->principalStance
+        );
+        $categoryFacetTotal = (int) (clone $categoryFacetQuery)->count('delegates.id');
+        $categoryCounts = (clone $categoryFacetQuery)
+            ->selectRaw("coalesce(category, '__none__') as cat, count(*) as c")
+            ->groupBy('cat')
+            ->pluck('c', 'cat')
+            ->all();
+
+        // Group facet (ignore group)
+        $groupFacetQuery = $this->delegateBaseQuery(
+            $this->q,
+            $this->category,
+            $this->regionId,
+            $this->districtId,
+            null,
+            $this->guarantorId,
+            $this->az,
+            $this->principalStance
+        );
+        $groupFacetTotal = (int) (clone $groupFacetQuery)->count('delegates.id');
+
+        $rel = (new Delegate())->groups();
+        $pivotTable = $rel->getTable();
+        $pivotDelegateKey = $rel->getForeignPivotKeyName();
+        $pivotGroupKey = $rel->getRelatedPivotKeyName();
+
+        $delegateSub = $groupFacetQuery->reorder()->select('delegates.id as id')->toBase();
+
+        $groupCounts = DB::query()
+            ->fromSub($delegateSub, 'fd')
+            ->join($pivotTable . ' as dg', 'dg.' . $pivotDelegateKey, '=', 'fd.id')
+            ->selectRaw('dg.' . $pivotGroupKey . ' as id, count(distinct fd.id) as c')
+            ->groupBy('id')
+            ->pluck('c', 'id')
+            ->all();
+
+        $noGroupCount = (int) DB::query()
+            ->fromSub($delegateSub, 'fd')
+            ->leftJoin($pivotTable . ' as dg', 'dg.' . $pivotDelegateKey, '=', 'fd.id')
+            ->whereNull('dg.' . $pivotDelegateKey)
+            ->count();
+
         // A–Z facet (only when search empty; ignore current az)
         $azCounts = [];
         $azFacetTotal = 0;
@@ -543,7 +605,6 @@ class DelegateBoard extends Component
             'delegates' => $delegates,
             'statusMap' => $statusMap,
 
-            // summary + facet counts
             'totalDelegates' => $totalDelegates,
             'filteredDelegatesCount' => $filteredDelegatesCount,
             'stanceSummary' => $stanceSummary,
@@ -559,6 +620,13 @@ class DelegateBoard extends Component
             'guarantorFacetTotal' => $guarantorFacetTotal,
             'guarantorCounts' => $guarantorCounts,
             'noGuarantorCount' => $noGuarantorCount,
+
+            'categoryFacetTotal' => $categoryFacetTotal,
+            'categoryCounts' => $categoryCounts,
+
+            'groupFacetTotal' => $groupFacetTotal,
+            'groupCounts' => $groupCounts,
+            'noGroupCount' => $noGroupCount,
 
             'azFacetTotal' => $azFacetTotal,
             'azCounts' => $azCounts,

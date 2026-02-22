@@ -52,7 +52,7 @@
 
   {{-- Filters --}}
   <div class="bg-white border rounded-lg shadow-sm p-4 space-y-3">
-    <div class="grid md:grid-cols-8 gap-2">
+    <div class="grid md:grid-cols-10 gap-2">
       <input wire:model.live.debounce.300ms="q"
              placeholder="Search delegate..."
              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10" />
@@ -91,6 +91,30 @@
         <option value="none">Principal: Not assessed (⭕ {{ number_format($principalStanceCounts['none'] ?? 0) }})</option>
       </select>
 
+      {{-- Category --}}
+      <select wire:model.live="category"
+              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
+        <option value="">All categories ({{ number_format($categoryFacetTotal ?? 0) }})</option>
+        <option value="__none__">Uncategorized ({{ number_format((int) ($categoryCounts['__none__'] ?? 0)) }})</option>
+        @foreach($categories as $cat)
+          <option value="{{ $cat }}">
+            {{ $cat }} ({{ number_format((int) ($categoryCounts[$cat] ?? 0)) }})
+          </option>
+        @endforeach
+      </select>
+
+      {{-- Group --}}
+      <select wire:model.live="groupId"
+              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
+        <option value="">All groups ({{ number_format($groupFacetTotal ?? 0) }})</option>
+        <option value="0">No group ({{ number_format((int) ($noGroupCount ?? 0)) }})</option>
+        @foreach($groups as $g)
+          <option value="{{ $g->id }}">
+            {{ $g->name }} ({{ number_format((int) ($groupCounts[$g->id] ?? 0)) }})
+          </option>
+        @endforeach
+      </select>
+
       {{-- Region --}}
       <select wire:model.live="regionId"
               class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
@@ -114,18 +138,16 @@
       </select>
 
       {{-- Guarantor --}}
-      @isset($guarantors)
-        <select wire:model.live="guarantorId"
-                class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
-          <option value="">All guarantors ({{ number_format($guarantorFacetTotal ?? 0) }})</option>
-          <option value="0">No guarantor ({{ number_format((int) ($noGuarantorCount ?? 0)) }})</option>
-          @foreach($guarantors as $g)
-            <option value="{{ $g->id }}">
-              {{ $g->name }} ({{ number_format((int) ($guarantorCounts[$g->id] ?? 0)) }})
-            </option>
-          @endforeach
-        </select>
-      @endisset
+      <select wire:model.live="guarantorId"
+              class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
+        <option value="">All guarantors ({{ number_format($guarantorFacetTotal ?? 0) }})</option>
+        <option value="0">No guarantor ({{ number_format((int) ($noGuarantorCount ?? 0)) }})</option>
+        @foreach($guarantors as $g)
+          <option value="{{ $g->id }}">
+            {{ $g->name }} ({{ number_format((int) ($guarantorCounts[$g->id] ?? 0)) }})
+          </option>
+        @endforeach
+      </select>
     </div>
 
     <div class="flex flex-wrap items-center gap-2 text-xs text-slate-600">
