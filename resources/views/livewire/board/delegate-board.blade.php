@@ -1,3 +1,5 @@
+{{-- FILE: resources/views/livewire/board/delegate-board.blade.php --}}
+
 <div class="p-6 space-y-6">
   @section('title', 'Delegate Board — '.config('app.name'))
 
@@ -25,6 +27,26 @@
          class="inline-flex items-center px-4 py-2 text-sm font-semibold rounded-md bg-slate-900 text-white hover:bg-slate-800">
         Status History
       </a>
+    </div>
+  </div>
+
+  {{-- Summary --}}
+  <div class="bg-white border rounded-lg shadow-sm p-4 flex flex-wrap items-center gap-3 text-sm">
+    <div class="font-semibold text-slate-800">
+      Total Delegates: <span class="font-bold">{{ number_format($totalDelegates ?? 0) }}</span>
+    </div>
+
+    <div class="text-slate-600">
+      Matching: <span class="font-semibold">{{ number_format($filteredDelegatesCount ?? 0) }}</span>
+    </div>
+
+    <span class="text-slate-300 mx-1">•</span>
+
+    <div class="inline-flex items-center gap-2 text-slate-700">
+      <span title="For">🟢 <span class="font-semibold">{{ number_format($stanceSummary['for'] ?? 0) }}</span></span>
+      <span title="Indicative">🟡 <span class="font-semibold">{{ number_format($stanceSummary['indicative'] ?? 0) }}</span></span>
+      <span title="Against">🔴 <span class="font-semibold">{{ number_format($stanceSummary['against'] ?? 0) }}</span></span>
+      <span title="Not assessed">⭕ <span class="font-semibold">{{ number_format($stanceSummary['none'] ?? 0) }}</span></span>
     </div>
   </div>
 
@@ -59,38 +81,48 @@
         @endforeach
       </select>
 
-      {{-- Principal stance filter --}}
+      {{-- Principal stance filter (counts ignore the currently-selected principalStance) --}}
       <select wire:model.live="principalStance"
               class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
-        <option value="">Principal: All</option>
-        <option value="for">Principal: For (🟢)</option>
-        <option value="indicative">Principal: Indicative (🟡)</option>
-        <option value="against">Principal: Against (🔴)</option>
-        <option value="none">Principal: Not assessed (⭕)</option>
+        <option value="">Principal: All ({{ number_format($principalStanceCounts['all'] ?? 0) }})</option>
+        <option value="for">Principal: For (🟢 {{ number_format($principalStanceCounts['for'] ?? 0) }})</option>
+        <option value="indicative">Principal: Indicative (🟡 {{ number_format($principalStanceCounts['indicative'] ?? 0) }})</option>
+        <option value="against">Principal: Against (🔴 {{ number_format($principalStanceCounts['against'] ?? 0) }})</option>
+        <option value="none">Principal: Not assessed (⭕ {{ number_format($principalStanceCounts['none'] ?? 0) }})</option>
       </select>
 
+      {{-- Region --}}
       <select wire:model.live="regionId"
               class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
-        <option value="">All categories</option>
+        <option value="">All regions ({{ number_format($regionFacetTotal ?? 0) }})</option>
         @foreach($regions as $r)
-          <option value="{{ $r->id }}">{{ $r->name }}</option>
+          <option value="{{ $r->id }}">
+            {{ $r->name }} ({{ number_format((int) ($regionCounts[$r->id] ?? 0)) }})
+          </option>
         @endforeach
       </select>
 
+      {{-- District --}}
       <select wire:model.live="districtId"
               class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
-        <option value="">All subcategories</option>
+        <option value="">All districts ({{ number_format($districtFacetTotal ?? 0) }})</option>
         @foreach($districts as $d)
-          <option value="{{ $d->id }}">{{ $d->name }}</option>
+          <option value="{{ $d->id }}">
+            {{ $d->name }} ({{ number_format((int) ($districtCounts[$d->id] ?? 0)) }})
+          </option>
         @endforeach
       </select>
 
+      {{-- Guarantor --}}
       @isset($guarantors)
         <select wire:model.live="guarantorId"
                 class="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/10">
-          <option value="">All guarantors</option>
+          <option value="">All guarantors ({{ number_format($guarantorFacetTotal ?? 0) }})</option>
+          <option value="0">No guarantor ({{ number_format((int) ($noGuarantorCount ?? 0)) }})</option>
           @foreach($guarantors as $g)
-            <option value="{{ $g->id }}">{{ $g->name }}</option>
+            <option value="{{ $g->id }}">
+              {{ $g->name }} ({{ number_format((int) ($guarantorCounts[$g->id] ?? 0)) }})
+            </option>
           @endforeach
         </select>
       @endisset
@@ -136,10 +168,15 @@
 
     <div class="flex flex-wrap gap-1">
       @foreach($letters as $L)
-        @php $active = strtoupper($current) === $L; @endphp
+        @php
+          $active = strtoupper($current) === $L;
+          $count = $L === 'ALL' ? (int) ($azFacetTotal ?? 0) : (int) ($azCounts[$L] ?? 0);
+        @endphp
+
         <button wire:click="$set('az','{{ $L === 'ALL' ? '' : $L }}')"
                 class="px-2 py-1 text-xs rounded border {{ $active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white hover:bg-slate-50 border-slate-200' }}">
           {{ $L }}
+          <span class="{{ $active ? 'opacity-90' : 'text-slate-500' }}">({{ $count }})</span>
         </button>
       @endforeach
     </div>

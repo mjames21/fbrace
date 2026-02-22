@@ -1,4 +1,5 @@
 <?php
+// FILE: app/Livewire/Board/DelegateBoard.php
 
 namespace App\Livewire\Board;
 
@@ -11,6 +12,7 @@ use App\Models\Guarantor;
 use App\Models\Region;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\WithPagination;
@@ -29,7 +31,6 @@ class DelegateBoard extends Component
     #[Url(as: 'candidate')]
     public ?int $candidateId = null;
 
-    // Locks board to principal candidate
     #[Url(as: 'principal')]
     public bool $principalOnly = true;
 
@@ -48,11 +49,9 @@ class DelegateBoard extends Component
     #[Url(as: 'guarantor')]
     public ?int $guarantorId = null;
 
-    // A–Z filter (applies only if q empty)
     #[Url(as: 'az')]
     public ?string $az = null;
 
-    // Filter delegates by PRINCIPAL stance (for/indicative/against/none)
     #[Url(as: 'pstance')]
     public ?string $principalStance = null;
 
@@ -71,6 +70,8 @@ class DelegateBoard extends Component
     public int $bulkConfidence = 50;
 
     public ?int $drawerDelegateId = null;
+
+    private ?int $cachedPrincipalCandidateId = null;
 
     public function updatingQ(): void { $this->clearSelection(); $this->resetPage(); }
     public function updatingRegionId(): void { $this->clearSelection(); $this->districtId = null; $this->resetPage(); }
@@ -98,11 +99,17 @@ class DelegateBoard extends Component
 
     private function principalCandidateId(): ?int
     {
-        return Candidate::query()
+        if ($this->cachedPrincipalCandidateId !== null) {
+            return $this->cachedPrincipalCandidateId;
+        }
+
+        $this->cachedPrincipalCandidateId = Candidate::query()
             ->where('is_principal', true)
             ->orderBy('sort_order')
             ->orderBy('name')
             ->value('id');
+
+        return $this->cachedPrincipalCandidateId;
     }
 
     private function applyPrincipalLock(): void
@@ -200,6 +207,7 @@ class DelegateBoard extends Component
     public function applyBulk(): void
     {
         if (!$this->candidateId) return;
+
         if (empty($this->selected)) {
             $this->dispatch('notify', message: 'No delegates selected.');
             return;
@@ -222,12 +230,12 @@ class DelegateBoard extends Component
         $this->clearSelection();
     }
 
-    private function applyPrincipalStanceFilter(Builder $query): void
+    private function applyPrincipalStanceFilterTo(Builder $query, ?string $principalStance): void
     {
         $pid = $this->principalCandidateId();
         if (!$pid) return;
 
-        $stance = strtolower((string) ($this->principalStance ?? ''));
+        $stance = strtolower((string) ($principalStance ?? ''));
         if ($stance === '') return;
 
         $statusTable = (new DelegateCandidateStatus())->getTable();
@@ -253,26 +261,55 @@ class DelegateBoard extends Component
         });
     }
 
-    private function delegateQuery(): Builder
-    {
+    private function delegateBaseQuery(
+        string $search,
+        ?string $category,
+        ?int $regionId,
+        ?int $districtId,
+        ?int $groupId,
+        ?int $guarantorId,
+        ?string $az,
+        ?string $principalStance
+    ): Builder {
         $query = Delegate::query()
-            ->with(['district.region', 'groups', 'guarantor'])
-            ->where('is_active', true) // ✅ hide archived/deleted
-            ->when($this->q !== '', fn (Builder $q) => $q->where('full_name', 'ilike', "%{$this->q}%"))
-            ->when($this->category, fn (Builder $q) => $q->where('category', $this->category))
-            ->when($this->districtId, fn (Builder $q) => $q->where('district_id', $this->districtId))
-            ->when($this->regionId, fn (Builder $q) => $q->whereHas('district', fn (Builder $d) => $d->where('region_id', $this->regionId)))
-            ->when($this->groupId, fn (Builder $q) => $q->whereHas('groups', fn (Builder $g) => $g->where('groups.id', $this->groupId)))
-            ->when($this->guarantorId, fn (Builder $q) => $q->where('guarantor_id', $this->guarantorId));
+            ->where('is_active', true)
+            ->when($search !== '', fn (Builder $q) => $q->where('full_name', 'ilike', "%{$search}%"))
+            ->when($category, fn (Builder $q) => $q->where('category', $category))
+            ->when($districtId, fn (Builder $q) => $q->where('district_id', $districtId))
+            ->when($regionId, fn (Builder $q) => $q->whereHas('district', fn (Builder $d) => $d->where('region_id', $regionId)))
+            ->when($groupId, fn (Builder $q) => $q->whereHas('groups', fn (Builder $g) => $g->where('groups.id', $groupId)))
+            ->when($guarantorId !== null, function (Builder $q) use ($guarantorId) {
+                if ($guarantorId === 0) {
+                    $q->whereNull('guarantor_id');
+                    return;
+                }
+                $q->where('guarantor_id', $guarantorId);
+            });
 
-        $this->applyPrincipalStanceFilter($query);
+        $this->applyPrincipalStanceFilterTo($query, $principalStance);
 
-        $az = strtoupper((string) ($this->az ?? ''));
-        if ($this->q === '' && $az !== '') {
+        $az = strtoupper((string) ($az ?? ''));
+        if ($search === '' && $az !== '') {
             $query->where('full_name', 'ilike', $az . '%');
         }
 
-        return $query->orderByRaw('lower(full_name) asc');
+        return $query;
+    }
+
+    private function delegateQuery(): Builder
+    {
+        return $this->delegateBaseQuery(
+            $this->q,
+            $this->category,
+            $this->regionId,
+            $this->districtId,
+            $this->groupId,
+            $this->guarantorId,
+            $this->az,
+            $this->principalStance
+        )
+            ->with(['district.region', 'groups', 'guarantor'])
+            ->orderByRaw('lower(full_name) asc');
     }
 
     /**
@@ -292,7 +329,47 @@ class DelegateBoard extends Component
         foreach ($rows as $r) {
             $map[(int) $r->delegate_id] = $r;
         }
+
         return $map;
+    }
+
+    /**
+     * Counts stances for a candidate across the delegates returned by $delegateIdsQuery.
+     *
+     * @return array{for:int,indicative:int,against:int,none:int,all:int}
+     */
+    private function stanceCountsForCandidateOnDelegates(int $candidateId, Builder $delegateIdsQuery): array
+    {
+        $statusTable = (new DelegateCandidateStatus())->getTable();
+
+        $sub = $delegateIdsQuery
+            ->reorder()
+            ->select('delegates.id as id')
+            ->toBase();
+
+        $counts = DB::query()
+            ->fromSub($sub, 'fd')
+            ->leftJoin($statusTable . ' as s', function ($join) use ($candidateId) {
+                $join->on('s.delegate_id', '=', 'fd.id')
+                    ->where('s.candidate_id', '=', $candidateId);
+            })
+            ->selectRaw("coalesce(s.stance, 'none') as stance, count(*) as c")
+            ->groupBy('stance')
+            ->pluck('c', 'stance')
+            ->all();
+
+        $for = (int) ($counts['for'] ?? 0);
+        $indicative = (int) ($counts['indicative'] ?? 0);
+        $against = (int) ($counts['against'] ?? 0);
+        $none = (int) ($counts['none'] ?? 0);
+
+        return [
+            'for' => $for,
+            'indicative' => $indicative,
+            'against' => $against,
+            'none' => $none,
+            'all' => $for + $indicative + $against + $none,
+        ];
     }
 
     public function render()
@@ -337,6 +414,125 @@ class DelegateBoard extends Component
         $delegateIds = $delegates->getCollection()->pluck('id');
         $statusMap = $this->statusesForPage($delegateIds);
 
+        // ----------------------------
+        // Summary + facet counts
+        // ----------------------------
+
+        $totalDelegates = (int) Delegate::query()->where('is_active', true)->count('id');
+
+        $filteredDelegatesQuery = $this->delegateBaseQuery(
+            $this->q,
+            $this->category,
+            $this->regionId,
+            $this->districtId,
+            $this->groupId,
+            $this->guarantorId,
+            $this->az,
+            $this->principalStance
+        );
+        $filteredDelegatesCount = (int) (clone $filteredDelegatesQuery)->count('delegates.id');
+
+        $stanceSummary = ['for' => 0, 'indicative' => 0, 'against' => 0, 'none' => 0, 'all' => 0];
+        if ($this->candidateId) {
+            $stanceSummary = $this->stanceCountsForCandidateOnDelegates((int) $this->candidateId, $filteredDelegatesQuery);
+        }
+
+        // Principal stance facet counts (ignore current principalStance)
+        $principalStanceCounts = ['for' => 0, 'indicative' => 0, 'against' => 0, 'none' => 0, 'all' => 0];
+        $pid = $this->principalCandidateId();
+        if ($pid) {
+            $principalFilteredNoFacet = $this->delegateBaseQuery(
+                $this->q,
+                $this->category,
+                $this->regionId,
+                $this->districtId,
+                $this->groupId,
+                $this->guarantorId,
+                $this->az,
+                null
+            );
+            $principalStanceCounts = $this->stanceCountsForCandidateOnDelegates((int) $pid, $principalFilteredNoFacet);
+        }
+
+        // Region facet (ignore region + district)
+        $regionFacetQuery = $this->delegateBaseQuery(
+            $this->q,
+            $this->category,
+            null,
+            null,
+            $this->groupId,
+            $this->guarantorId,
+            $this->az,
+            $this->principalStance
+        );
+        $regionFacetTotal = (int) (clone $regionFacetQuery)->count('delegates.id');
+        $regionCounts = (clone $regionFacetQuery)
+            ->join('districts', 'districts.id', '=', 'delegates.district_id')
+            ->selectRaw('districts.region_id as id, count(*) as c')
+            ->groupBy('districts.region_id')
+            ->pluck('c', 'id')
+            ->all();
+
+        // District facet (ignore district; keep region)
+        $districtFacetQuery = $this->delegateBaseQuery(
+            $this->q,
+            $this->category,
+            $this->regionId,
+            null,
+            $this->groupId,
+            $this->guarantorId,
+            $this->az,
+            $this->principalStance
+        );
+        $districtFacetTotal = (int) (clone $districtFacetQuery)->count('delegates.id');
+        $districtCounts = (clone $districtFacetQuery)
+            ->selectRaw('district_id as id, count(*) as c')
+            ->groupBy('district_id')
+            ->pluck('c', 'id')
+            ->all();
+
+        // Guarantor facet (ignore guarantor)
+        $guarantorFacetQuery = $this->delegateBaseQuery(
+            $this->q,
+            $this->category,
+            $this->regionId,
+            $this->districtId,
+            $this->groupId,
+            null,
+            $this->az,
+            $this->principalStance
+        );
+        $guarantorFacetTotal = (int) (clone $guarantorFacetQuery)->count('delegates.id');
+        $guarantorCounts = (clone $guarantorFacetQuery)
+            ->selectRaw('guarantor_id as id, count(*) as c')
+            ->groupBy('guarantor_id')
+            ->pluck('c', 'id')
+            ->all();
+        $noGuarantorCount = (int) (clone $guarantorFacetQuery)->whereNull('guarantor_id')->count('delegates.id');
+
+        // A–Z facet (only when search empty; ignore current az)
+        $azCounts = [];
+        $azFacetTotal = 0;
+        if ($this->q === '') {
+            $azFacetQuery = $this->delegateBaseQuery(
+                '',
+                $this->category,
+                $this->regionId,
+                $this->districtId,
+                $this->groupId,
+                $this->guarantorId,
+                null,
+                $this->principalStance
+            );
+
+            $azFacetTotal = (int) (clone $azFacetQuery)->count('delegates.id');
+            $azCounts = (clone $azFacetQuery)
+                ->selectRaw("upper(left(full_name, 1)) as letter, count(*) as c")
+                ->groupBy('letter')
+                ->pluck('c', 'letter')
+                ->all();
+        }
+
         return view('livewire.board.delegate-board', [
             'candidates' => $candidates,
             'regions' => $regions,
@@ -346,6 +542,26 @@ class DelegateBoard extends Component
             'guarantors' => $guarantors,
             'delegates' => $delegates,
             'statusMap' => $statusMap,
+
+            // summary + facet counts
+            'totalDelegates' => $totalDelegates,
+            'filteredDelegatesCount' => $filteredDelegatesCount,
+            'stanceSummary' => $stanceSummary,
+
+            'principalStanceCounts' => $principalStanceCounts,
+
+            'regionFacetTotal' => $regionFacetTotal,
+            'regionCounts' => $regionCounts,
+
+            'districtFacetTotal' => $districtFacetTotal,
+            'districtCounts' => $districtCounts,
+
+            'guarantorFacetTotal' => $guarantorFacetTotal,
+            'guarantorCounts' => $guarantorCounts,
+            'noGuarantorCount' => $noGuarantorCount,
+
+            'azFacetTotal' => $azFacetTotal,
+            'azCounts' => $azCounts,
         ])->layout('layouts.app');
     }
 }
